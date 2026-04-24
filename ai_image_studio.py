@@ -187,7 +187,6 @@ class AIImageStudio:
         input_frame.pack(fill=tk.X, pady=(0, 15))
         self.prompt_input = scrolledtext.ScrolledText(input_frame, height=4, font=("Microsoft YaHei", 11), wrap=tk.WORD, bg="#16213e", fg="#fff", insertbackground="#fff")
         self.prompt_input.pack(fill=tk.X, pady=5)
-        self.prompt_input.insert(tk.END, "smiling under cherry blossom tree, wearing pink floral dress")
         
         # 参数区
         param_frame = tk.Frame(input_frame, bg="#1a1a2e")
@@ -265,7 +264,6 @@ class AIImageStudio:
         tk.Label(char_frame, text="Appearance (face, hair, body, skin - fixed features):", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(anchor=tk.W)
         self.char_desc_input = scrolledtext.ScrolledText(char_frame, height=4, font=("Microsoft YaHei", 10), wrap=tk.WORD, bg="#16213e", fg="#fff", insertbackground="#fff")
         self.char_desc_input.pack(fill=tk.X, pady=5)
-        self.char_desc_input.insert(tk.END, "smiling under cherry blossom tree, wearing pink floral dress\nsurprised looking out rainy window, wearing cozy sweater\nrunning through autumn forest, wearing brown leather jacket\nsitting at desk reading book, wearing glasses and school uniform")
         
         char_btn_frame = tk.Frame(char_frame, bg="#1a1a2e")
         char_btn_frame.pack(fill=tk.X, pady=5)
