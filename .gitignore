@@ -27,6 +27,11 @@ output/
 *.mp4
 *.avi
 
+# Screenshots (允许)
+!screenshots/*.png
+!screenshots/*.jpg
+!screenshots/*.jpeg
+
 # Models (太大，用户自行下载)
 *.safetensors
 *.ckpt

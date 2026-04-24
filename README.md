@@ -47,6 +47,20 @@
 
 ---
 
+## 作品展示
+
+### 🎭 角色设定
+
+![角色设定](screenshots/artwork_character_portrait.png)
+
+### 📖 漫画分镜
+
+![漫画分镜1](screenshots/artwork_panel_01.png)
+
+![漫画分镜3](screenshots/artwork_panel_03.png)
+
+---
+
 ## 快速开始
 
 ### 1. 安装依赖
