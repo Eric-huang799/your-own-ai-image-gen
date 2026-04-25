@@ -9,13 +9,15 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 from PIL import Image, ImageTk
 import io
+import re
 
 # ============ 配置 ============
 OLLAMA_URL = "http://127.0.0.1:11434"
 COMFYUI_URL = "http://127.0.0.1:8189"
 COMFYUI_ALT_URL = "http://127.0.0.1:8188"
-WORKFLOW_TXT2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "workflows", "txt2img_api.json")
-WORKFLOW_IMG2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "workflows", "img2img_api.json")
+WORKFLOW_TXT2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "txt2img_api.json")
+WORKFLOW_IMG2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "img2img_api.json")
+WORKFLOW_IPADAPTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "ipadapter_api.json")
 OUTPUT_DIR = os.path.expanduser("~/Desktop/AI_picture")
 COMFYUI_START_BAT = os.path.expanduser("~/.openclaw/workspace/start_comfy_conda.bat")
 CONDA_PYTHON = os.path.expanduser("~/.conda/envs/comfyui/python.exe")
@@ -306,16 +308,16 @@ sitting at desk reading book, wearing glasses and school uniform"""
         p2 = tk.Frame(param_frame, bg="#1a1a2e")
         p2.pack(fill=tk.X, pady=5)
         tk.Label(p2, text="Consistency:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
-        self.denoise_var = tk.DoubleVar(value=0.70)
-        tk.Scale(p2, from_=0.5, to=0.85, resolution=0.05, orient=tk.HORIZONTAL, variable=self.denoise_var, length=180, bg="#1a1a2e", fg="#fff", highlightthickness=0).pack(side=tk.LEFT, padx=5)
-        tk.Label(p2, text="(0.5=very similar, 0.85=more creative)", bg="#1a1a2e", fg="#888", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT)
+        self.denoise_var = tk.DoubleVar(value=0.55)
+        tk.Scale(p2, from_=0.35, to=0.75, resolution=0.05, orient=tk.HORIZONTAL, variable=self.denoise_var, length=180, bg="#1a1a2e", fg="#fff", highlightthickness=0).pack(side=tk.LEFT, padx=5)
+        tk.Label(p2, text="(0.35=face almost identical, 0.55=balanced, 0.75=more creative)", bg="#1a1a2e", fg="#888", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT)
         
         p3 = tk.Frame(param_frame, bg="#1a1a2e")
         p3.pack(fill=tk.X, pady=2)
         tk.Label(p3, text="Seed:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
         self.seed_mode_var = tk.StringVar(value="fixed")
-        tk.Radiobutton(p3, text="Fixed (max consistency)", variable=self.seed_mode_var, value="fixed", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(p3, text="Series (slight variation)", variable=self.seed_mode_var, value="series", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p3, text="Fixed (max consistency, recommended)", variable=self.seed_mode_var, value="fixed", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p3, text="Series (varied poses, slight appearance drift)", variable=self.seed_mode_var, value="series", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
         self.base_seed_var = tk.StringVar(value="123456")
         tk.Entry(p3, textvariable=self.base_seed_var, width=10, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
         
@@ -323,11 +325,12 @@ sitting at desk reading book, wearing glasses and school uniform"""
         p4 = tk.Frame(param_frame, bg="#1a1a2e")
         p4.pack(fill=tk.X, pady=8)
         tk.Label(p4, text="Mode:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT)
-        self.use_ref_var = tk.BooleanVar(value=False)
-        tk.Radiobutton(p4, text="🎭 Action Free (txt2img + fixed seed, full pose freedom)", variable=self.use_ref_var, value=False, bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(p4, text="🔒 Face Lock (img2img + reference, limits pose changes)", variable=self.use_ref_var, value=True, bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        self.mode_var = tk.StringVar(value="ipadapter")
+        tk.Radiobutton(p4, text="🧠 IPAdapter (txt2img + face injection, BEST consistency ✨)", variable=self.mode_var, value="ipadapter", bg="#1a1a2e", fg="#00d9ff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p4, text="🔒 Face Lock (img2img + reference, SAME character)", variable=self.mode_var, value="face_lock", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p4, text="🎭 Action Free (txt2img, DIFFERENT character per scene)", variable=self.mode_var, value="action_free", bg="#1a1a2e", fg="#888", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
         
-        note = tk.Label(param_frame, text="Tip: Action Free is recommended for story comics. Use Face Lock only for close-up portraits.", bg="#1a1a2e", fg="#888", font=("Microsoft YaHei", 9))
+        note = tk.Label(param_frame, text="Tip: IPAdapter is STRONGLY RECOMMENDED for story comics. Face Lock for backup. Action Free = no consistency.", bg="#1a1a2e", fg="#00d9ff", font=("Microsoft YaHei", 9))
         note.pack(anchor=tk.W, pady=(5,0))
         
         # 风格预设
@@ -409,6 +412,107 @@ Output format (just the prompt text, no quotes, no explanations):"""
         result = result.replace('"', '').replace("'", "")
         result = result.replace('English prompt:', '').replace('Prompt:', '')
         return result.strip()
+
+    def optimize_comic_prompt(self, chinese_prompt, char_desc):
+        """漫画专用优化器：分层结构 = 角色 + 表情 + 动作 + 氛围 + 质感"""
+        system_prompt = """You are an expert AI image generation prompt engineer specializing in comic storyboards and cinematic storytelling.
+
+Your task: Convert a Chinese scene description into a PRECISE, CINEMATIC English SD prompt.
+
+CRITICAL RULES:
+1. OUTPUT ONLY the prompt text - no quotes, no explanations, no markdown
+2. STRUCTURE (in this exact order):
+   [Character appearance] + [Facial expression with weight] + [Dynamic action/pose with weight] + [Environment/atmosphere] + [Quality tags]
+3. Extract the EXACT emotion: smiling → (bright smile:1.3), surprised → (wide-eyed shocked expression:1.3), sad → (tears welling up, sorrowful eyes:1.2)
+4. Describe action SPECIFICALLY with motion: not "sitting" but "slumped against window sill, head tilted down, fingers tracing raindrops on glass"
+5. Add atmospheric details: rainy → "raindrops streaking down foggy glass, dim gray ambient light"; autumn forest → "golden leaves swirling in wind, dappled sunlight"
+6. Include cinematic framing cues: depth of field, foreground elements, lighting direction
+7. Use prompt weighting: (emotion:1.3), (action:1.2), (environment detail:1.1)
+8. NEVER omit hair color, eye color from char_desc - wrap them: (blue eyes:1.3), (long blue hair:1.3)
+9. Keep under 180 tokens
+
+Example: "惊讶地看着窗外下雨，穿着毛衣"
+Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-eyed shocked expression:1.3), (mouth slightly open:1.2), hands pressed against window glass, leaning forward, raindrops streaking down foggy window, dim gray ambient light, wet glass reflection, cozy oversized sweater, masterpiece, best quality, highly detailed, cinematic lighting, depth of field"""
+
+        full_prompt = f"{system_prompt}\n\nCharacter: {char_desc}\nScene: {chinese_prompt}\n\nEnglish prompt:"
+        payload = {
+            "model": "wizardlm-uncensored",
+            "prompt": full_prompt,
+            "stream": False,
+            "options": {"temperature": 0.6, "num_predict": 280}
+        }
+        try:
+            r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            result = data.get('response', '').strip()
+            result = result.replace('"', '').replace("'", "")
+            result = result.replace('English prompt:', '').replace('Prompt:', '')
+            result = result.replace('solo, 1 person, ', '')
+            result = result.replace('solo', '').replace('1 person', '').replace('single character', '')
+            return result.strip()
+        except Exception as e:
+            return f"{char_desc}, {chinese_prompt}, masterpiece, best quality, highly detailed, 8k uhd"
+
+    def protect_character_colors(self, char_desc):
+        """给角色描述中的颜色词加权重保护，防止场景颜色污染"""
+        colors = ['black', 'brown', 'blonde', 'blond', 'golden', 'silver', 'white', 'red', 'blue', 'green', 'purple', 'pink', 'gray', 'grey', 'auburn', 'chestnut']
+        protected = char_desc
+        for color in colors:
+            pattern = r'\b(' + color + r')\b(?!\s*\:)'
+            protected = re.sub(pattern, r'(\1:1.3)', protected, flags=re.IGNORECASE)
+        protected = re.sub(r'\((\([^)]+\:1\.3\)\:1\.3)\)', r'\1', protected)
+        return protected
+
+    def enhance_atmosphere(self, scene_text):
+        """根据场景关键词自动追加氛围渲染词"""
+        scene_lower = scene_text.lower()
+        extras = []
+        if any(w in scene_lower for w in ['rain', 'rainy', '下雨', '雨']):
+            extras.append("raindrops streaking down surfaces, wet hair strands, humid atmosphere, water reflections")
+        if any(w in scene_lower for w in ['snow', 'snowy', '下雪', '雪']):
+            extras.append("snowflakes falling gently, breath visible in cold air, soft white blanket covering ground")
+        if any(w in scene_lower for w in ['night', 'dark', '晚上', '夜晚']):
+            extras.append("moonlight casting soft silver glow, deep shadows, stars faintly visible, cool blue ambient light")
+        if any(w in scene_lower for w in ['sunset', 'sunrise', 'golden hour', '黄昏', '日出']):
+            extras.append("warm golden hour light, long dramatic shadows, orange and pink sky gradient, rim lighting on hair")
+        if any(w in scene_lower for w in ['forest', 'woods', '森林', '树林']):
+            extras.append("dappled sunlight filtering through canopy, mossy textures, earthy scent visualized, natural depth")
+        if any(w in scene_lower for w in ['city', 'street', 'urban', '城市', '街道']):
+            extras.append("neon reflections on wet pavement, urban depth layers, distant city lights bokeh, modern energy")
+        if any(w in scene_lower for w in ['happy', 'joy', 'smile', 'laugh', '开心', '笑', '高兴']):
+            extras.append("warm inviting lighting, sparkling energy in air, bright optimistic color palette, uplifting atmosphere")
+        if any(w in scene_lower for w in ['sad', 'sorrow', 'cry', 'tear', '难过', '哭', '悲伤']):
+            extras.append("muted desaturated tones, soft diffused overcast light, solitary contemplative mood, gentle melancholy")
+        if any(w in scene_lower for w in ['surprised', 'shock', '惊讶', '吃惊', '震惊']):
+            extras.append("sudden sharp lighting contrast, motion blur suggestion, dynamic energy burst, caught-in-the-moment feeling")
+        if any(w in scene_lower for w in ['angry', 'furious', 'mad', '生气', '愤怒']):
+            extras.append("harsh dramatic shadows, intense contrast, tension in the air, stormy atmosphere visualized")
+        if any(w in scene_lower for w in ['scared', 'fear', 'afraid', '害怕', '恐惧']):
+            extras.append("dim uncertain lighting, looming shadows, claustrophobic framing, cold blue undertones")
+        if any(w in scene_lower for w in ['peaceful', 'calm', 'relax', '宁静', '平静', '放松']):
+            extras.append("soft even diffused lighting, harmonious color palette, gentle gradient background, serene stillness")
+        if any(w in scene_lower for w in ['bedroom', 'room', '室内', '房间', 'desk', '书房']):
+            extras.append("intimate indoor lighting, soft shadows from furniture, cozy enclosed feeling, warm artificial light sources")
+        if any(w in scene_lower for w in ['window', '窗户']):
+            extras.append("natural light streaming through glass, window frame creating natural vignette, indoor-outdoor light contrast")
+        if extras:
+            return ", " + ", ".join(extras)
+        return ""
+
+    def get_camera_variation(self, idx):
+        """电影级构图变化，增强剧情表现力"""
+        variations = [
+            "close-up portrait, shallow depth of field, face fills 60% of frame, soft rim light on hair",
+            "medium shot, character at golden ratio intersection, foreground element framing the scene, cinematic bokeh",
+            "over-the-shoulder shot, looking toward off-screen action, dramatic diagonal composition, leading lines",
+            "low angle heroic shot, looking up at character, imposing presence, dramatic sky/ceiling backdrop",
+            "Dutch angle, dynamic tilt, tension in composition, asymmetric framing, motion blur suggestion",
+            "extreme close-up on eyes/hands, emotional detail shot, macro texture, intimate perspective",
+            "wide environmental shot, character small in vast space, loneliness or freedom feeling, atmospheric perspective",
+            "through-frame shot, character viewed through doorframe/window/branches, voyeuristic intimacy, layered depth",
+        ]
+        return variations[idx % len(variations)]
     
     # ============ ComfyUI 通用方法 ============
     def queue_prompt(self, workflow):
@@ -699,17 +803,32 @@ Output format (just the prompt text, no quotes, no explanations):"""
             messagebox.showwarning("Tip", "ComfyUI is offline, please start it first")
             return
         
-        use_reference = self.use_ref_var.get()
+        mode = self.mode_var.get()
+        use_reference = (mode == "face_lock")
+        use_ipadapter = (mode == "ipadapter")
         
-        # 如果选 Face Lock 模式，检查参考图
-        if use_reference:
+        # Face Lock / IPAdapter 都需要参考图
+        if use_reference or use_ipadapter:
             if not self.reference_image_path or not os.path.exists(self.reference_image_path):
                 auto_ref = os.path.join(COMFYUI_INPUT_DIR, "reference.png")
                 if os.path.exists(auto_ref):
                     self.reference_image_path = auto_ref
                 else:
-                    messagebox.showwarning("Tip", "Face Lock mode requires a reference image.\nPlease generate or load one first, or switch to Action Free mode.")
-                    return
+                    # 自动先生成参考图
+                    self.comic_status.config(text="Auto-generating character sheet first...", fg="#e94560")
+                    self.root.update()
+                    try:
+                        self.generate_character_sheet()
+                        # 等待参考图生成完成
+                        auto_ref = os.path.join(COMFYUI_INPUT_DIR, "reference.png")
+                        if os.path.exists(auto_ref):
+                            self.reference_image_path = auto_ref
+                        else:
+                            messagebox.showwarning("Tip", "Character sheet generation failed. Please generate one manually first.")
+                            return
+                    except Exception as e:
+                        messagebox.showwarning("Tip", f"Auto character sheet failed: {e}\nPlease generate one manually first.")
+                        return
         
         char_desc = self.char_desc_input.get("1.0", tk.END).strip()
         char_name = self.char_name_var.get().strip()
@@ -719,7 +838,7 @@ Output format (just the prompt text, no quotes, no explanations):"""
         self.comic_progress['maximum'] = len(scenes)
         self.comic_progress['value'] = 0
         
-        mode_text = "Face Lock" if use_reference else "Action Free"
+        mode_text = {"ipadapter": "IPAdapter", "face_lock": "Face Lock", "action_free": "Action Free"}.get(mode, mode)
         self.comic_status.config(text=f"Mode: {mode_text} | Preparing {len(scenes)} panels...", fg="#e94560")
         
         # 清空旧缩略图
@@ -737,11 +856,11 @@ Output format (just the prompt text, no quotes, no explanations):"""
                 seed_mode = self.seed_mode_var.get()
                 base_seed = int(self.base_seed_var.get())
                 
-                # Face Lock 模式：上传参考图
+                # Face Lock / IPAdapter 模式：上传参考图
                 ref_name = None
-                if use_reference:
+                if use_reference or use_ipadapter:
                     self.root.after(0, lambda: self.comic_status.config(
-                        text=f"Mode: Face Lock | Uploading reference...", fg="#e94560"))
+                        text=f"Mode: {mode_text} | Uploading reference...", fg="#e94560"))
                     ref_name = self.upload_image_to_comfyui(self.reference_image_path)
                 
                 generated_files = []
@@ -765,18 +884,27 @@ Output format (just the prompt text, no quotes, no explanations):"""
                         style_neg_add = ", photorealistic, 3d render, sharp edges, digital art, clean lines"
                     
                     # ===== 构建提示词 =====
-                    if use_reference:
-                        # Face Lock: 角色描述 + 场景，但不重复强调外貌（参考图已锁定）
-                        full_prompt = f"{style_pos}{char_desc}, {scene}, masterpiece, best quality, highly detailed, professional lighting, 8k uhd"
-                    else:
-                        # Action Free: 每帧都带完整角色描述 + 场景 + 强制动作权重
-                        full_prompt = f"{style_pos}{char_desc}, {scene}, dynamic pose, masterpiece, best quality, highly detailed, professional lighting, 8k uhd"
+                    # 构图变化
+                    camera_var = self.get_camera_variation(idx)
+                    # 颜色保护
+                    protected_char = self.protect_character_colors(char_desc)
+                    # 氛围增强
+                    atmosphere = self.enhance_atmosphere(scene)
                     
-                    # 优化提示词（第一帧用 Ollama，后面复用结构但跳过 API 加速）
-                    if idx == 0 and "offline" not in self.ollama_status2.cget("text"):
+                    # 基础提示词
+                    full_prompt = f"{style_pos}(solo:1.4), (1 person:1.3), {protected_char}, {scene}, {camera_var}{atmosphere}, masterpiece, best quality, highly detailed, professional lighting, cinematic composition, 8k uhd"
+                    
+                    # 优化提示词（漫画专用优化器，每帧都优化）
+                    if "offline" not in self.ollama_status2.cget("text"):
                         try:
-                            en_prompt = self.optimize_prompt(full_prompt)
-                        except:
+                            en_prompt = self.optimize_comic_prompt(scene, protected_char)
+                            camera_var = self.get_camera_variation(idx)
+                            if "(solo:" not in en_prompt.lower() and "(1 person:" not in en_prompt.lower() and "solo" not in en_prompt.lower():
+                                en_prompt = f"(solo:1.4), (1 person:1.3), {en_prompt}, {camera_var}"
+                            else:
+                                if camera_var not in en_prompt:
+                                    en_prompt = f"{en_prompt}, {camera_var}"
+                        except Exception as e:
                             en_prompt = full_prompt
                     else:
                         en_prompt = full_prompt
@@ -788,7 +916,31 @@ Output format (just the prompt text, no quotes, no explanations):"""
                         current_seed = base_seed + idx
                     
                     # ===== 选择 Workflow =====
-                    if use_reference:
+                    if use_ipadapter:
+                        # IPAdapter: txt2img + face injection
+                        workflow = self.load_workflow(WORKFLOW_IPADAPTER)
+                        
+                        for node_id, node in workflow.items():
+                            if node.get('class_type') == 'CheckpointLoaderSimple':
+                                node['inputs']['ckpt_name'] = model_name
+                            elif node.get('class_type') == 'CLIPTextEncode':
+                                meta_title = node.get('_meta', {}).get('title', '')
+                                if 'Positive' in meta_title or node_id == '6':
+                                    node['inputs']['text'] = en_prompt
+                                elif 'Negative' in meta_title or node_id == '7':
+                                    neg = node['inputs'].get('text', '')
+                                    if 'mutated face' not in neg:
+                                        node['inputs']['text'] = neg + ", (mutated face:1.3), (wrong face:1.3), (different person:1.4), (extra limbs:1.3), (2 people:1.5), (multiple characters:1.5), (group:1.5), (crowd:1.5), (twin:1.4), (extra person:1.5), (duplicate:1.4), (wrong hair color:1.3), (wrong eye color:1.3), (mismatched colors:1.2)" + style_neg_add
+                            elif node.get('class_type') == 'LoadImage':
+                                node['inputs']['image'] = ref_name
+                            elif node.get('class_type') == 'EmptyLatentImage':
+                                node['inputs']['width'] = width
+                                node['inputs']['height'] = height
+                            elif node.get('class_type') == 'KSampler':
+                                node['inputs']['steps'] = steps
+                                node['inputs']['seed'] = current_seed
+                                node['inputs']['control_after_generate'] = "fixed"
+                    elif use_reference:
                         # Face Lock: img2img
                         workflow = self.load_workflow(WORKFLOW_IMG2IMG)
                         
@@ -802,7 +954,7 @@ Output format (just the prompt text, no quotes, no explanations):"""
                                 elif 'Negative' in meta_title or node_id == '3':
                                     neg = node['inputs'].get('text', '')
                                     if 'same pose' not in neg:
-                                        node['inputs']['text'] = neg + ", same pose, identical pose, static posture, unchanged stance, duplicate" + style_neg_add
+                                        node['inputs']['text'] = neg + ", (same pose:1.3), (identical pose:1.3), (static posture:1.3), (unchanged stance:1.3), (duplicate:1.4), (2 people:1.5), (multiple characters:1.5), (group:1.5), (crowd:1.5), (twin:1.4), (extra person:1.5), (wrong hair color:1.3), (wrong eye color:1.3), (mismatched colors:1.2)" + style_neg_add
                             elif node.get('class_type') == 'LoadImage':
                                 node['inputs']['image'] = ref_name
                             elif node.get('class_type') == 'EmptyLatentImage':
@@ -827,7 +979,7 @@ Output format (just the prompt text, no quotes, no explanations):"""
                                 elif 'Negative' in meta_title or node_id == '3':
                                     neg = node['inputs'].get('text', '')
                                     if 'mutated face' not in neg:
-                                        node['inputs']['text'] = neg + ", mutated face, wrong face, different person, extra limbs" + style_neg_add
+                                        node['inputs']['text'] = neg + ", (mutated face:1.3), (wrong face:1.3), (different person:1.4), (extra limbs:1.3), (2 people:1.5), (multiple characters:1.5), (group:1.5), (crowd:1.5), (twin:1.4), (extra person:1.5), (duplicate:1.4), (wrong hair color:1.3), (wrong eye color:1.3), (mismatched colors:1.2)" + style_neg_add
                             elif node.get('class_type') == 'EmptyLatentImage':
                                 node['inputs']['width'] = width
                                 node['inputs']['height'] = height

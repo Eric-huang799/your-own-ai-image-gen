@@ -62,8 +62,10 @@
 |---|---|
 | 🎨 **单图生成** | 中文提示词 → AI 自动翻译优化 → ComfyUI 出图 |
 | 📖 **漫画工作室** | 角色设定 + 分镜脚本 → 批量生成同角色不同场景的图片 |
-| 🎭 **双模式** | Action Free（动作自由）/ Face Lock（高一致性） |
+| 🎭 **三模式** | Action Free / Face Lock / **IPAdapter**（推荐） |
+| 🧠 **IPAdapter** | txt2img + 人脸特征注入，动作自由且角色一致 |
 | 🌈 **风格预设** | Soft Moe / Dark Dramatic / Watercolor 一键切换 |
+| 🎬 **电影级分镜** | 自动构图变化 + 氛围渲染 + 表情动作加权 |
 | 🔧 **模型切换** | 支持 dreamshaper / pony / meinamix 等多种模型 |
 | 🖥️ **纯本地** | 所有模型、推理、图片全部在本地完成，无需联网 |
 
@@ -74,7 +76,7 @@
 - **操作系统**：Windows 10/11
 - **Python**：3.10+
 - **GPU**：NVIDIA 显卡，至少 6GB 显存（推荐 8GB+）
-- **依赖**：Ollama（提示词优化）+ ComfyUI（图像生成）
+- **依赖**：Ollama（提示词优化）+ ComfyUI（图像生成）+ **IPAdapter Plus**（角色一致性）
 
 ---
 
@@ -85,15 +87,22 @@
 
 ![单图生成](screenshots/02_single_image.png)
 
-### 📖 漫画工作室
-角色设定 + 分镜脚本 + 风格预设，一键批量生成：
+### 📖 漫画工作室（IPAdapter 模式推荐）
+角色设定 + 分镜脚本 + 电影级提示词优化，一键批量生成同角色剧情分镜：
 
 ![漫画工作室](screenshots/03_comic_studio.png)
 
-### 📚 漫画分镜生成结果
-同角色不同动作/场景/表情的批量生成效果：
+### 🧠 IPAdapter 角色一致性
+基于参考图注入角色面部特征，跨场景保持同一张脸，动作完全自由：
 
-![漫画分镜](screenshots/04_comic_panels.png)
+![角色设定](screenshots/ling_character_design.png)
+
+### 📚 漫画分镜生成结果
+同角色不同动作/场景/表情的批量生成效果（IPAdapter 模式）：
+
+![漫画分镜1](screenshots/ling_panel_01_ipa.png)
+
+![漫画分镜2](screenshots/ling_panel_02_ipa.png)
 
 ---
 
@@ -122,6 +131,11 @@
   ollama pull wizardlm-uncensored
   ```
 - 安装 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 到 `~/ComfyUI/` 目录
+- **安装 IPAdapter Plus 插件**（用于角色一致性）：
+  ```bash
+  cd ~/ComfyUI/custom_nodes
+  git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git
+  ```
 
 ### 2. 下载模型
 
@@ -132,6 +146,19 @@
 | `dreamshaper_8.safetensors` | 通用写实 | [Civitai](https://civitai.com/models/4384/dreamshaper) |
 | `meinamix_v12Final.safetensors` | 二次元萌系（推荐） | [Civitai](https://civitai.com/models/7240/meinamix) |
 | `ponyDiffusionV6XL_v6.safetensors` | 二次元插画 | [Civitai](https://civitai.com/models/257749/pony-diffusion-xl-v6) |
+
+**IPAdapter 模型**（放到 `ComfyUI/models/ipadapter/`）：
+
+| 文件 | 说明 | 下载 |
+|---|---|---|
+| `ip-adapter-plus-face_sd15.safetensors` | 脸部特征注入（推荐） | [HuggingFace](https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus-face_sd15.safetensors) |
+| `ip-adapter-plus_sd15.safetensors` | 通用 Plus 版本 | [HuggingFace](https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.safetensors) |
+
+**CLIP Vision 模型**（放到 `ComfyUI/models/clip_vision/`）：
+
+| 文件 | 下载 |
+|---|---|
+| `CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors` | [HuggingFace](https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors) |
 
 > **注意**：模型由第三方提供，下载和使用请遵守 Civitai 平台规则及模型作者的使用条款。
 
@@ -154,11 +181,17 @@
 1. **角色设定**：填写角色外貌（脸型、发型、眼睛颜色等固定特征）
 2. **生成角色设定图**：点击「🎨 Generate Character Sheet」生成参考图
 3. **分镜脚本**：每行写一个场景（动作/表情/服装/背景）
-4. **参数调整**：
-   - **Mode**：Action Free（动作自由）推荐用于故事漫画
+4. **选择模式**：
+   - **🧠 IPAdapter（强烈推荐）**：txt2img + 人脸注入，动作自由且脸一致
+   - **🔒 Face Lock**：img2img + 参考图，脸最像但动作受限
+   - **🎭 Action Free**：txt2img，每帧不同角色（不推荐用于故事漫画）
+5. **参数调整**：
    - **Style Preset**：Soft Moe 适合 pastel 萌系风格
-   - **Consistency**：denoise 越低一致性越高
-5. 点击 **🚀 GENERATE COMIC** 批量生成
+   - **Consistency**（Face Lock）：denoise 越低一致性越高
+   - **Seed**：Fixed 推荐，Series 增加画面变化
+6. 点击 **🚀 GENERATE COMIC** 批量生成
+
+> **剧情提示词技巧**：描述越具体越好！例如不要只写"下雨"，写"惊讶地看着窗外下雨，穿着毛衣"——程序会自动优化为电影级提示词。
 
 ---
 
@@ -169,7 +202,9 @@ your-own-ai-image-gen/
 ├── ai_image_studio.py        # 主程序（双 Tab GUI）
 ├── workflows/
 │   ├── txt2img_api.json       # 单图生成 workflow
-│   └── img2img_api.json       # 漫画一致性 workflow
+│   ├── img2img_api.json       # 漫画一致性 workflow
+│   └── ipadapter_api.json     # IPAdapter 角色一致性 workflow
+├── screenshots/               # 界面截图与作品展示
 ├── start.bat                  # Windows 启动脚本
 ├── README.md                  # 本文件
 └── .gitignore
@@ -179,13 +214,24 @@ your-own-ai-image-gen/
 
 ## 技术原理
 
-**角色一致性（Action Free 模式）**：
-- txt2img + 固定 Seed + 每帧注入完整角色描述
-- 无需参考图，动作完全自由，脸部靠描述+seed保持一致
+**角色一致性（IPAdapter 模式 - 推荐）**：
+- 参考图 → CLIP Vision 提取视觉特征 → IPAdapter 注入 UNet
+- txt2img 正常生成（denoise=1.0），动作完全自由
+- 模型"记得"角色长什么样，跨场景保持一致
 
 **角色一致性（Face Lock 模式）**：
 - img2img + 参考图打底（VAE Encode）+ 固定 Seed
-- 脸部最像，但姿势受参考图限制
+- 脸部最像，但 denoise 越低动作越受限
+
+**角色一致性（Action Free 模式）**：
+- txt2img + 固定 Seed + 每帧注入完整角色描述
+- 无需参考图，但一致性最差，适合单幅创作
+
+**电影级提示词优化**：
+- Ollama 专用漫画优化器：提取表情/动作/氛围三层结构
+- 自动氛围渲染：天气/情绪/场景关键词 → 环境光影描述
+- 自动构图变化：每帧不同电影镜头（特写/过肩/低角度/荷兰角等）
+- 颜色保护：角色外貌颜色加权，防止场景颜色污染
 
 ---
 
