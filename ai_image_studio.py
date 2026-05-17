@@ -676,20 +676,22 @@ Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-
         p = {"prompt": workflow, "client_id": "ai_image_studio"}
         try:
             r = requests.post(f"{self.comfy_url}/prompt", json=p, timeout=30)
-            r.raise_for_status()
-            try:
-                return r.json()
-            except Exception as e:
-                raise Exception(f"ComfyUI returned invalid JSON: {e}\nResponse: {r.text[:500]}")
-        except requests.exceptions.HTTPError as e:
-            if r.status_code == 500:
-                error_detail = r.text[:500] if hasattr(r, 'text') else "No details"
-                raise Exception(f"ComfyUI 500 Server Error. Common causes:\n"
-                              f"1. Model file not found\n"
-                              f"2. ComfyUI still loading\n"
-                              f"3. Workflow format incompatible\n"
-                              f"Details: {error_detail}")
-            raise Exception(f"Failed to queue prompt: {e}")
+            if r.status_code != 200:
+                try:
+                    err = r.json()
+                    err_msg = err.get('error', {}).get('message', '') or json.dumps(err)
+                except:
+                    err_msg = r.text[:500]
+                raise Exception(f"ComfyUI Error ({r.status_code}): {err_msg}")
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    detail = e.response.json()
+                except:
+                    detail = e.response.text[:300]
+                raise Exception(f"ComfyUI Error: {detail}")
+            raise Exception(f"Cannot connect to ComfyUI: {e}")
     
     def get_image(self, filename, subfolder, folder_type):
         data = {"filename": filename, "subfolder": subfolder, "type": folder_type}
