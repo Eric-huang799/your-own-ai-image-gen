@@ -255,9 +255,10 @@ class AIImageStudio:
             # 尝试多种方式启动 ComfyUI
             started = False
 
-            # ComfyUI 启动参数 (RTX 50系列需绕过xformers)
+            # ComfyUI 启动参数 (RTX 50系列兼容 + 低显存稳定)
             comfy_args = ["--listen", "127.0.0.1", "--port", "8188",
-                         "--use-pytorch-cross-attention"]  # 兼容Blackwell GPU
+                         "--use-pytorch-cross-attention",  # Blackwell GPU兼容
+                         "--lowvram"]  # 降低VRAM峰值, 防止OOM卡死
 
             # 方式1: conda env (用户可能有 comfyui 环境)
             for conda_env in ["comfyui", "ComfyUI", "base"]:
@@ -724,10 +725,10 @@ Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-
         result = r.json()
         return result.get('name', os.path.basename(image_path))
     
-    def wait_for_image(self, prompt_id, timeout_sec=120):
-        """等待 ComfyUI 生成完成并返回图片数据"""
-        for i in range(timeout_sec // 2):
-            time.sleep(2)
+    def wait_for_image(self, prompt_id, timeout_sec=300):
+        """等待 ComfyUI 生成完成并返回图片数据 (lowvram模式下较慢)"""
+        for i in range(timeout_sec // 3):
+            time.sleep(3)
             try:
                 history = self.get_history(prompt_id)
                 if prompt_id in history:
