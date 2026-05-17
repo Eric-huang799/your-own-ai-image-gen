@@ -251,11 +251,39 @@ class AIImageStudio:
                         return
                 except:
                     pass
-            
-            if COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
-                subprocess.Popen([sys.executable, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-            else:
-                messagebox.showerror("Error", "Cannot find ComfyUI. Please install ComfyUI and set COMFYUI_MAIN path in ai_image_studio.py.\n\nExpected at: ~/ComfyUI/main.py")
+
+            # 尝试多种方式启动 ComfyUI
+            started = False
+
+            # 方式1: conda env (用户可能有 comfyui 环境)
+            for conda_env in ["comfyui", "ComfyUI", "base"]:
+                conda_python = os.path.expanduser(f"~/.conda/envs/{conda_env}/python.exe")
+                if os.path.exists(conda_python) and COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
+                    try:
+                        subprocess.Popen([conda_python, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"],
+                                       creationflags=subprocess.CREATE_NEW_CONSOLE)
+                        started = True
+                        break
+                    except:
+                        pass
+
+            # 方式2: 系统 Python (如果装了 torch)
+            if not started and COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
+                try:
+                    subprocess.Popen([sys.executable, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"],
+                                   creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    started = True
+                except:
+                    pass
+
+            if not started:
+                msg = "Cannot start ComfyUI automatically.\n\n"
+                msg += "Please start ComfyUI manually:\n"
+                msg += "  cd ~/ComfyUI\n"
+                msg += "  python main.py --listen 127.0.0.1 --port 8188\n\n"
+                if COMFYUI_MAIN:
+                    msg += f"Detected at: {COMFYUI_MAIN}\n"
+                messagebox.showwarning("ComfyUI", msg)
                 return
         except Exception as e:
             messagebox.showerror("Error", f"Cannot start ComfyUI: {e}")
