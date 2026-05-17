@@ -255,12 +255,16 @@ class AIImageStudio:
             # 尝试多种方式启动 ComfyUI
             started = False
 
+            # ComfyUI 启动参数 (RTX 50系列需绕过xformers)
+            comfy_args = ["--listen", "127.0.0.1", "--port", "8188",
+                         "--use-pytorch-cross-attention"]  # 兼容Blackwell GPU
+
             # 方式1: conda env (用户可能有 comfyui 环境)
             for conda_env in ["comfyui", "ComfyUI", "base"]:
                 conda_python = os.path.expanduser(f"~/.conda/envs/{conda_env}/python.exe")
                 if os.path.exists(conda_python) and COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
                     try:
-                        subprocess.Popen([conda_python, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"],
+                        subprocess.Popen([conda_python, COMFYUI_MAIN] + comfy_args,
                                        creationflags=subprocess.CREATE_NEW_CONSOLE)
                         started = True
                         break
@@ -270,7 +274,7 @@ class AIImageStudio:
             # 方式2: 系统 Python (如果装了 torch)
             if not started and COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
                 try:
-                    subprocess.Popen([sys.executable, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"],
+                    subprocess.Popen([sys.executable, COMFYUI_MAIN] + comfy_args,
                                    creationflags=subprocess.CREATE_NEW_CONSOLE)
                     started = True
                 except:
