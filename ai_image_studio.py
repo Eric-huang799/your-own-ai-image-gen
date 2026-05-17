@@ -18,14 +18,134 @@ COMFYUI_ALT_URL = "http://127.0.0.1:8188"
 WORKFLOW_TXT2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "txt2img_api.json")
 WORKFLOW_IMG2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "img2img_api.json")
 WORKFLOW_IPADAPTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "ipadapter_api.json")
-OUTPUT_DIR = os.path.expanduser("~/Desktop/AI_picture")
-COMFYUI_START_BAT = os.path.expanduser("~/.openclaw/workspace/start_comfy_conda.bat")
-CONDA_PYTHON = os.path.expanduser("~/.conda/envs/comfyui/python.exe")
-COMFYUI_MAIN = os.path.expanduser("~/ComfyUI/main.py")
-COMFYUI_INPUT_DIR = os.path.expanduser("~/ComfyUI/input")
-
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(COMFYUI_INPUT_DIR, exist_ok=True)
+
+# ---- ComfyUI 路径自动检测 ----
+def _find_comfyui():
+    candidates = [
+        os.path.expanduser("~/ComfyUI"), os.path.expanduser("~/comfyui"),
+        "C:/ComfyUI", "D:/ComfyUI", os.path.expanduser("~/Documents/ComfyUI"),
+    ]
+    for base in candidates:
+        mp = os.path.join(base, "main.py")
+        if os.path.exists(mp): return base, mp
+    return None, None
+
+COMFYUI_BASE, COMFYUI_MAIN = _find_comfyui()
+if COMFYUI_BASE:
+    COMFYUI_INPUT_DIR = os.path.join(COMFYUI_BASE, "input")
+    os.makedirs(COMFYUI_INPUT_DIR, exist_ok=True)
+else:
+    COMFYUI_INPUT_DIR = None
+
+COMFYUI_START_BAT = None
+CONDA_PYTHON = sys.executable
+
+# ---- GPU 检测 ----
+GPU_VRAM_MB = 0
+GPU_NAME = "Unknown"
+
+def _detect_gpu():
+    global GPU_VRAM_MB, GPU_NAME
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            timeout=5, encoding="utf-8", errors="replace"
+        ).strip()
+        parts = out.split(",")
+        GPU_NAME = parts[0].strip()
+        GPU_VRAM_MB = int(parts[1].strip())
+    except:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                GPU_NAME = torch.cuda.get_device_name(0)
+                GPU_VRAM_MB = torch.cuda.get_device_properties(0).total_memory // (1024*1024)
+        except:
+            pass
+
+_detect_gpu()
+
+# ---- 模型数据库 (VRAM需求为估算值，实际可能±20%) ----
+MODEL_DB = {
+    "dreamshaper_8.safetensors": {
+        "name": "Dreamshaper 8 (SD 1.5)",
+        "vram_mb": 2500, "tier": "light", "type": "写实/通用",
+        "url": "https://civitai.com/models/4384/dreamshaper",
+        "desc": "通用写实风格，最低配置要求，适合入门"
+    },
+    "meinamix_v12Final.safetensors": {
+        "name": "Meinamix v12 (SD 1.5)",
+        "vram_mb": 2500, "tier": "light", "type": "二次元萌系",
+        "url": "https://civitai.com/models/7240/meinamix",
+        "desc": "二次元动漫风格，角色一致性最佳"
+    },
+    "AnythingV5_v5PrtRE.safetensors": {
+        "name": "Anything V5 (SD 1.5)",
+        "vram_mb": 2500, "tier": "light", "type": "二次元通用",
+        "url": "https://civitai.com/models/9409/or-anything-v5",
+        "desc": "二次元通用替代方案，显存要求低"
+    },
+    "counterfeitV30_v30.safetensors": {
+        "name": "Counterfeit V3.0 (SD 1.5)",
+        "vram_mb": 2500, "tier": "light", "type": "二次元精致",
+        "url": "https://civitai.com/models/4468/counterfeit-v30",
+        "desc": "精致二次元风格，替代meinamix"
+    },
+    "ponyDiffusionV6XL_v6.safetensors": {
+        "name": "Pony Diffusion XL V6",
+        "vram_mb": 7000, "tier": "heavy", "type": "二次元插画(SDXL)",
+        "url": "https://civitai.com/models/257749/pony-diffusion-xl-v6",
+        "desc": "SDXL高清，需8GB+显存，低配电脑慎用"
+    },
+}
+
+def get_model_tier(vram_mb):
+    """根据GPU显存推荐模型等级"""
+    if vram_mb >= 8000: return "heavy"
+    if vram_mb >= 4000: return "medium"
+    return "light"
+
+def scan_available_models():
+    """扫描 ComfyUI checkpoints 目录中实际存在的模型"""
+    available = []
+    if COMFYUI_BASE:
+        ckpt_dir = os.path.join(COMFYUI_BASE, "models", "checkpoints")
+        if os.path.isdir(ckpt_dir):
+            for f in os.listdir(ckpt_dir):
+                if f.endswith((".safetensors", ".ckpt")):
+                    available.append(f)
+    return available
+
+def get_model_choices():
+    """合并数据库模型 + 本地已下载模型，返回推荐排序列表"""
+    available = scan_available_models()
+    tier = get_model_tier(GPU_VRAM_MB)
+    choices = []
+    for fname, info in sorted(MODEL_DB.items(), key=lambda x: x[1]["vram_mb"]):
+        tag = "✓已下载" if fname in available else "⬇需下载"
+        tier_mark = "⭐推荐" if info["tier"] == tier else ("⚠高配" if info["tier"] == "heavy" else "")
+        label = f"{fname} [{info['type']}] {tag}"
+        if tier_mark: label += f" {tier_mark}"
+        choices.append((label, fname))
+    # 追加数据库外的已下载模型
+    for f in available:
+        if f not in MODEL_DB:
+            choices.append((f"{f} [本地已下载]", f))
+    return choices
+
+def suggest_model():
+    """根据GPU返回推荐模型文件名"""
+    tier = get_model_tier(GPU_VRAM_MB)
+    available = scan_available_models()
+    for fname, info in sorted(MODEL_DB.items(), key=lambda x: x[1]["vram_mb"]):
+        if info["tier"] == tier and fname in available:
+            return fname
+    for fname, info in sorted(MODEL_DB.items(), key=lambda x: x[1]["vram_mb"]):
+        if info["tier"] == tier:
+            return fname
+    return "dreamshaper_8.safetensors"
 
 
 class AIImageStudio:
@@ -41,7 +161,8 @@ class AIImageStudio:
         self.thumbnails = []
         
         # 状态栏
-        self.status_var = tk.StringVar(value="Initializing...")
+        gpu_info = f" | GPU: {GPU_NAME} ({GPU_VRAM_MB}MB) | 推荐: {'轻量' if get_model_tier(GPU_VRAM_MB)=='light' else '标准' if get_model_tier(GPU_VRAM_MB)=='medium' else '高性能'}模型" if GPU_VRAM_MB > 0 else " | GPU: 未检测到(将使用CPU,速度较慢)"
+        self.status_var = tk.StringVar(value=f"Initializing...{gpu_info}")
         self.status_bar = tk.Label(root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W, bg="#16213e", fg="#e94560")
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
@@ -131,12 +252,10 @@ class AIImageStudio:
                 except:
                     pass
             
-            if os.path.exists(COMFYUI_START_BAT):
-                subprocess.Popen([COMFYUI_START_BAT], creationflags=subprocess.CREATE_NEW_CONSOLE)
-            elif os.path.exists(CONDA_PYTHON) and os.path.exists(COMFYUI_MAIN):
-                subprocess.Popen([CONDA_PYTHON, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            if COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
+                subprocess.Popen([sys.executable, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"], creationflags=subprocess.CREATE_NEW_CONSOLE)
             else:
-                messagebox.showerror("Error", "Cannot find ComfyUI startup script")
+                messagebox.showerror("Error", "Cannot find ComfyUI. Please install ComfyUI and set COMFYUI_MAIN path in ai_image_studio.py.\n\nExpected at: ~/ComfyUI/main.py")
                 return
         except Exception as e:
             messagebox.showerror("Error", f"Cannot start ComfyUI: {e}")
@@ -203,8 +322,13 @@ class AIImageStudio:
         self.steps_var = tk.StringVar(value="25")
         tk.Spinbox(param_frame, from_=10, to=50, increment=5, textvariable=self.steps_var, width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
         tk.Label(param_frame, text="  Model:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20,0))
-        self.model_var = tk.StringVar(value="dreamshaper_8.safetensors")
-        model_combo = ttk.Combobox(param_frame, textvariable=self.model_var, values=["dreamshaper_8.safetensors", "ponyDiffusionV6XL_v6.safetensors", "meinamix_v12Final.safetensors"], width=22, font=("Microsoft YaHei", 10))
+        model_choices = get_model_choices()
+        model_labels = [c[0] for c in model_choices]
+        self._model_map = {c[0]: c[1] for c in model_choices}
+        default_fname = suggest_model()
+        default_label = next((l for l, f in self._model_map.items() if f == default_fname), model_labels[0] if model_labels else "")
+        self.model_var = tk.StringVar(value=default_label)
+        model_combo = ttk.Combobox(param_frame, textvariable=self.model_var, values=model_labels, width=30, font=("Microsoft YaHei", 10))
         model_combo.pack(side=tk.LEFT, padx=5)
         
         # 生成按钮
@@ -301,8 +425,13 @@ sitting at desk reading book, wearing glasses and school uniform"""
         self.c_steps_var = tk.StringVar(value="25")
         tk.Spinbox(p1, from_=10, to=50, increment=5, textvariable=self.c_steps_var, width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
         tk.Label(p1, text="  Model:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20,0))
-        self.c_model_var = tk.StringVar(value="meinamix_v12Final.safetensors")
-        c_model_combo = ttk.Combobox(p1, textvariable=self.c_model_var, values=["meinamix_v12Final.safetensors", "dreamshaper_8.safetensors", "ponyDiffusionV6XL_v6.safetensors"], width=22, font=("Microsoft YaHei", 10))
+        c_model_choices = get_model_choices()
+        c_model_labels = [c[0] for c in c_model_choices]
+        self._c_model_map = {c[0]: c[1] for c in c_model_choices}
+        c_default_fname = suggest_model()
+        c_default_label = next((l for l, f in self._c_model_map.items() if f == c_default_fname), c_model_labels[0] if c_model_labels else "")
+        self.c_model_var = tk.StringVar(value=c_default_label)
+        c_model_combo = ttk.Combobox(p1, textvariable=self.c_model_var, values=c_model_labels, width=30, font=("Microsoft YaHei", 10))
         c_model_combo.pack(side=tk.LEFT, padx=5)
         
         p2 = tk.Frame(param_frame, bg="#1a1a2e")
@@ -615,12 +744,10 @@ Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-
                 width = int(self.width_var.get())
                 height = int(self.height_var.get())
                 steps = int(self.steps_var.get())
-                model_name = self.model_var.get()
+                model_name = self._model_map.get(self.model_var.get(), self.model_var.get())
                 
                 model_paths = [
-                    os.path.expanduser(f"~/ComfyUI/models/checkpoints/{model_name}"),
-                    f"C:/Users/lenovo/ComfyUI/models/checkpoints/{model_name}",
-                    f"C:/ComfyUI/models/checkpoints/{model_name}",
+                    os.path.join(COMFYUI_BASE, "models", "checkpoints", model_name) if COMFYUI_BASE else "",
                 ]
                 if not any(os.path.exists(p) for p in model_paths):
                     raise FileNotFoundError(f"Model not found: {model_name}")
@@ -734,7 +861,7 @@ Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-
                 width = int(self.c_width_var.get())
                 height = int(self.c_height_var.get())
                 steps = int(self.c_steps_var.get())
-                model_name = self.c_model_var.get()
+                model_name = self._c_model_map.get(self.c_model_var.get(), self.c_model_var.get())
                 
                 for node_id, node in workflow.items():
                     if node.get('class_type') == 'CheckpointLoaderSimple':
@@ -851,7 +978,7 @@ Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-
                 width = int(self.c_width_var.get())
                 height = int(self.c_height_var.get())
                 steps = int(self.c_steps_var.get())
-                model_name = self.c_model_var.get()
+                model_name = self._c_model_map.get(self.c_model_var.get(), self.c_model_var.get())
                 denoise = float(self.denoise_var.get())
                 seed_mode = self.seed_mode_var.get()
                 base_seed = int(self.base_seed_var.get())

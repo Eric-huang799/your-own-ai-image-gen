@@ -73,10 +73,26 @@
 
 ## 运行环境
 
-- **操作系统**：Windows 10/11
+- **操作系统**：Windows 10/11（Linux/macOS 需自行修改启动脚本）
 - **Python**：3.10+
-- **GPU**：NVIDIA 显卡，至少 6GB 显存（推荐 8GB+）
+- **GPU**：NVIDIA 显卡，至少 2.5GB 显存（轻量模型）/ 4GB+（标准）/ 8GB+（SDXL高清）
 - **依赖**：Ollama（提示词优化）+ ComfyUI（图像生成）+ **IPAdapter Plus**（角色一致性）
+
+### 自动性能适配（v2.1 新增）
+
+启动时自动检测 GPU 型号和显存大小，智能推荐模型：
+
+| 显存 | 推荐模型 | 说明 |
+|------|---------|------|
+| 2.5GB - 4GB | Dreamshaper 8 / Meinamix v12（SD 1.5 轻量） | 低配友好，512x512 出图 |
+| 4GB - 8GB | Anything V5 / Counterfeit V3（SD 1.5 标准） | 1024x1024 流畅 |
+| 8GB+ | Pony Diffusion XL V6（SDXL） | 2048x2048 高清，角色一致性好 |
+
+模型下拉框显示：
+- `✓已下载` = 本地已有，可直接用
+- `⬇需下载` = 需下载到 ComfyUI/models/checkpoints/
+- `⭐推荐` = 根据你的 GPU 推荐
+- `⚠高配` = 你的 GPU 可能带不动
 
 ---
 
@@ -199,7 +215,8 @@
 
 ```
 your-own-ai-image-gen/
-├── ai_image_studio.py        # 主程序（双 Tab GUI）
+├── ai_image_studio.py        # 主程序（双 Tab GUI + GPU自适应）
+├── requirements.txt           # Python 依赖
 ├── workflows/
 │   ├── txt2img_api.json       # 单图生成 workflow
 │   ├── img2img_api.json       # 漫画一致性 workflow
@@ -207,6 +224,7 @@ your-own-ai-image-gen/
 ├── screenshots/               # 界面截图与作品展示
 ├── start.bat                  # Windows 启动脚本
 ├── README.md                  # 本文件
+├── LICENSE                    # MIT 开源协议
 └── .gitignore
 ```
 
