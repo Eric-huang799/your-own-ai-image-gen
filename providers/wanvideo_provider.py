@@ -108,7 +108,17 @@ class WanVideoProvider(ImageProvider):
 
         payload = {"prompt": workflow, "client_id": "ai_video_studio"}
         r = requests.post(f"{url}/prompt", json=payload, timeout=30)
-        r.raise_for_status()
+        if r.status_code != 200:
+            detail = ""
+            try:
+                detail = r.text[:800]
+            except Exception:
+                pass
+            raise Exception(
+                f"ComfyUI {r.status_code} Error.\n"
+                f"Common causes: missing model file, wrong path, or incompatible node version.\n"
+                f"Details: {detail}"
+            )
         result = r.json()
 
         if "prompt_id" not in result:

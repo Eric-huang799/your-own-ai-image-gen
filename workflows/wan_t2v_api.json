@@ -35,7 +35,7 @@
         "Node name for S&R": "LoadWanVideoT5TextEncoder"
       },
       "widgets_values": [
-        "umt5-xxl-enc-bf16.safetensors",
+        "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
         "bf16",
         "offload_device",
         "disabled"
@@ -482,7 +482,7 @@
         "Node name for S&R": "WanVideoVAELoader"
       },
       "widgets_values": [
-        "wanvideo\\Wan2_1_VAE_bf16.safetensors",
+        "vae/wan_2.1_vae.safetensors",
         "bf16"
       ],
       "color": "#322",
@@ -622,109 +622,6 @@
         "ver": "5406a72f62adf4a31a8a0a0e4923cc5288399652",
         "Node name for S&R": "WanVideoSetBlockSwap"
       },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 58,
-      "type": "WanVideoSetLoRAs",
-      "pos": [
-        630.5015869140625,
-        -367.1865234375
-      ],
-      "size": [
-        174.53378295898438,
-        46
-      ],
-      "flags": {},
-      "order": 19,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "WANVIDEOMODEL",
-          "link": 61
-        },
-        {
-          "name": "lora",
-          "shape": 7,
-          "type": "WANVIDLORA",
-          "link": 64
-        }
-      ],
-      "outputs": [
-        {
-          "name": "model",
-          "type": "WANVIDEOMODEL",
-          "links": [
-            62
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-WanVideoWrapper",
-        "ver": "5406a72f62adf4a31a8a0a0e4923cc5288399652",
-        "Node name for S&R": "WanVideoSetLoRAs"
-      },
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 60,
-      "type": "WanVideoLoraSelectMulti",
-      "pos": [
-        573.026123046875,
-        -824.0180053710938
-      ],
-      "size": [
-        332.3269348144531,
-        342
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "prev_lora",
-          "shape": 7,
-          "type": "WANVIDLORA",
-          "link": null
-        },
-        {
-          "name": "blocks",
-          "shape": 7,
-          "type": "SELECTEDBLOCKS",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "lora",
-          "type": "WANVIDLORA",
-          "links": [
-            64
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ComfyUI-WanVideoWrapper",
-        "ver": "5406a72f62adf4a31a8a0a0e4923cc5288399652",
-        "Node name for S&R": "WanVideoLoraSelectMulti"
-      },
-      "widgets_values": [
-        "WanVideo\\Lightx2v\\lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16_.safetensors",
-        1,
-        "none",
-        1,
-        "none",
-        1,
-        "none",
-        1,
-        "none",
-        1,
-        false,
-        false
-      ],
       "color": "#223",
       "bgcolor": "#335"
     },
@@ -1054,7 +951,7 @@
         "Node name for S&R": "WanVideoModelLoader"
       },
       "widgets_values": [
-        "WanVideo\\fp8_scaled_kj\\T2V\\Wan2_1-T2V-14B_fp8_e4m3fn_scaled_KJ.safetensors",
+        "diffusion_models/Wan2_1-T2V-14B_fp8_e4m3fn_scaled_KJ.safetensors",
         "fp16",
         "fp8_e4m3fn_scaled",
         "offload_device",
@@ -1242,25 +1139,9 @@
       61,
       22,
       0,
-      58,
-      0,
-      "WANVIDEOMODEL"
-    ],
-    [
-      62,
-      58,
-      0,
       56,
       0,
       "WANVIDEOMODEL"
-    ],
-    [
-      64,
-      60,
-      0,
-      58,
-      1,
-      "WANVIDLORA"
     ]
   ],
   "groups": [
