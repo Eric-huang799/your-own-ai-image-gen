@@ -31,8 +31,10 @@ class ComfyUIProvider(ImageProvider):
     def is_available(self) -> bool:
         try:
             url = self._detect_url()
-            r = requests.get(f"{url}/system_stats", timeout=2)
-            return r.status_code == 200
+            if url == self.base_url:
+                r = requests.get(f"{url}/system_stats", timeout=2)
+                return r.status_code == 200
+            return True  # alt_url already verified by _detect_url
         except Exception:
             return False
 

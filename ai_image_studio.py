@@ -149,6 +149,7 @@ class AIImageStudio:
         def check():
             llm_ok = self.llm.is_available() if self.llm else False
             img_ok = self.image_provider.is_available() if self.image_provider else False
+            wan_ok = self.wanvideo.is_available() if self.wanvideo else False
 
             llm_label = self.llm.label if self.llm else "None"
             img_label = self.image_provider.label if self.image_provider else "None"
@@ -159,14 +160,20 @@ class AIImageStudio:
 
             llm_color = color_ok if llm_ok else color_fail
             img_color = color_ok if img_ok else color_warn
+            wan_color = color_ok if wan_ok else color_warn
 
             llm_text = f"LLM [{llm_label}]: {'OK' if llm_ok else 'Not Available'}"
             img_text = f"Image [{img_label}]: {'OK' if img_ok else 'Not Available'}"
+            wan_text = f"Wan2.1: {'OK' if wan_ok else 'Not Available'}"
 
+            # Single/Comic tabs
             self.ollama_status.config(text=llm_text, fg=llm_color)
             self.ollama_status2.config(text=llm_text, fg=llm_color)
             self.comfy_status.config(text=img_text, fg=img_color)
             self.comfy_status2.config(text=img_text, fg=img_color)
+            # Video tab
+            self.video_llm_status.config(text=llm_text, fg=llm_color)
+            self.video_wan_status.config(text=wan_text, fg=wan_color)
 
             self.status_var.set("Ready")
 

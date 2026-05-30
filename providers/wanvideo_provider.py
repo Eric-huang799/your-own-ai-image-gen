@@ -30,10 +30,16 @@ class WanVideoProvider(ImageProvider):
         return self.base_url
 
     def is_available(self) -> bool:
+        """Only probes once via _detect_url, avoids double HTTP request."""
         try:
             url = self._detect_url()
-            r = requests.get(f"{url}/system_stats", timeout=2)
-            return r.status_code == 200
+            # _detect_url already verified the URL is alive if it returned non-default
+            # If it returned base_url, we need to verify it wasn't just the fallback
+            if url == self.base_url:
+                # Probe base_url once to confirm
+                r = requests.get(f"{url}/system_stats", timeout=2)
+                return r.status_code == 200
+            return True  # alt_url was verified by _detect_url
         except Exception:
             return False
 
