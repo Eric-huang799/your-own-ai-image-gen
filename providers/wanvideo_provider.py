@@ -60,51 +60,30 @@ class WanVideoProvider(ImageProvider):
         cfg = kwargs.get("cfg", 5.0)
         shift = kwargs.get("shift", 5.0)
         frame_rate = kwargs.get("frame_rate", 16)
-        preview_enabled = kwargs.get("preview_enabled", True)
 
-        for node in workflow.get("nodes", []):
-            node_type = node.get("type", "")
-            wv = node.get("widgets_values", [])
+        # Workflow is now API format: dict keyed by node ID string
+        # Inject parameters into the correct node inputs
+        for nid, node in workflow.items():
+            ntype = node.get("class_type", "")
+            inputs = node.get("inputs", {})
 
-            if node_type == "WanVideoEmptyEmbeds":
-                # widgets_values: [width, height, num_frames]
-                node["widgets_values"] = [width, height, num_frames]
+            if ntype == "WanVideoTextEncode":
+                inputs["positive_prompt"] = prompt
+                inputs["negative_prompt"] = negative_prompt
 
-            elif node_type == "CLIPTextEncode":
-                # Two CLIPTextEncode nodes: first is negative (id=50), second is positive (id=49)
-                node_id = node.get("id", 0)
-                if node_id == 50:
-                    node["widgets_values"] = [negative_prompt]
-                elif node_id == 49:
-                    node["widgets_values"] = [prompt]
+            elif ntype == "WanVideoEmptyEmbeds":
+                inputs["width"] = width
+                inputs["height"] = height
+                inputs["num_frames"] = num_frames
 
-            elif node_type == "WanVideoTextEncode":
-                # widgets_values: [prompt, negative_prompt, ...]
-                if len(wv) >= 2:
-                    wv[0] = prompt
-                    wv[1] = negative_prompt
-                    node["widgets_values"] = wv
+            elif ntype == "WanVideoSampler":
+                inputs["steps"] = steps
+                inputs["cfg"] = cfg
+                inputs["shift"] = shift
+                inputs["seed"] = seed if seed >= 0 else 42
 
-            elif node_type == "WanVideoSampler":
-                # widgets_values: [steps, cfg, shift, seed, ...]
-                if len(wv) >= 4:
-                    wv[0] = steps
-                    wv[1] = cfg
-                    wv[2] = shift
-                    wv[3] = seed if seed >= 0 else 42
-                    node["widgets_values"] = wv
-
-            elif node_type == "VHS_VideoCombine":
-                # widgets_values is a dict for this node type
-                if isinstance(wv, dict):
-                    wv["frame_rate"] = frame_rate
-                    node["widgets_values"] = wv
-
-            elif node_type == "WanVideoDecode":
-                # widgets_values has tiled decode settings
-                if isinstance(wv, list) and len(wv) >= 5:
-                    wv[0] = preview_enabled
-                    node["widgets_values"] = wv
+            elif ntype == "SaveAnimatedWEBP":
+                inputs["fps"] = float(frame_rate)
 
         payload = {"prompt": workflow, "client_id": "ai_video_studio"}
         r = requests.post(f"{url}/prompt", json=payload, timeout=30)
