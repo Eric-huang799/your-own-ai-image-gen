@@ -7,6 +7,7 @@ from .deepseek_llm import DeepSeekProvider
 from .comfyui_image import ComfyUIProvider
 from .stability_image import StabilityAIProvider
 from .siliconflow_image import SiliconFlowProvider
+from .wanvideo_provider import WanVideoProvider
 
 LLM_PROVIDERS = {
     "ollama": OllamaProvider,
@@ -19,4 +20,5 @@ IMAGE_PROVIDERS = {
     "comfyui": ComfyUIProvider,
     "stability": StabilityAIProvider,
     "siliconflow": SiliconFlowProvider,
+    "wanvideo": WanVideoProvider,
 }

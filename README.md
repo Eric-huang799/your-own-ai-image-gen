@@ -68,6 +68,7 @@
 | 🎬 **电影级分镜** | 自动构图变化 + 氛围渲染 + 表情动作加权 |
 | 🔧 **模型切换** | 支持 dreamshaper / pony / meinamix 等多种模型 |
 | 🖥️ **纯本地** | 所有模型、推理、图片全部在本地完成，无需联网 |
+| 🎬 **视频生成** | v3.1 新增：中文 Prompt → LLM 优化 → Wan2.1 14B T2V 出视频 |
 | ☁️ **云端 API** | v3.0 新增：支持 OpenAI/Claude/DeepSeek 优化 + Stability AI/SiliconFlow 生图 |
 | ⚙️ **可视化设置** | API Key 管理、模型切换、本地/云端一键切换，无需改代码 |
 
@@ -116,6 +117,11 @@
 一键切换 LLM 和图像生成 Provider，支持 OpenAI / Claude / DeepSeek / Stability AI / 硅基流动：
 
 ![设置](screenshots/05_settings.png)
+
+### 🎬 视频生成（v3.1 新增）
+中文提示词 → LLM 电影级优化 → Wan2.1 14B T2V 生成 5 秒视频：
+
+![视频生成](screenshots/06_video_studio.png)
 
 ### 🧠 IPAdapter 角色一致性
 基于参考图注入角色面部特征，跨场景保持同一张脸，动作完全自由：
@@ -249,12 +255,14 @@ your-own-ai-image-gen/
 │   ├── image_base.py          #   生图抽象基类
 │   ├── comfyui_image.py       #   ComfyUI 本地
 │   ├── stability_image.py     #   Stability AI 云端
+│   ├── wanvideo_provider.py  #   Wan2.1 视频生成 (v3.1 新增)
 │   └── siliconflow_image.py   #   硅基流动 云端
 ├── requirements.txt           # Python 依赖
 ├── workflows/
 │   ├── txt2img_api.json       # 单图生成 workflow
 │   ├── img2img_api.json       # 漫画一致性 workflow
-│   └── ipadapter_api.json     # IPAdapter 角色一致性 workflow
+│   ├── ipadapter_api.json     # IPAdapter 角色一致性 workflow
+│   └── wan_t2v_api.json       # Wan2.1 T2V 视频 workflow (v3.1 新增)
 ├── screenshots/               # 界面截图与作品展示
 ├── start.bat                  # Windows 启动脚本
 ├── README.md                  # 本文件
@@ -314,6 +322,11 @@ your-own-ai-image-gen/
 ---
 
 ## 更新日志
+
+### v3.1 (2026-05-30)
+- **新增视频生成 Tab**：中文 Prompt → LLM 优化 → Wan2.1 14B T2V 出视频
+- **新增 WanVideo provider**：封装 Wan2.1 ComfyUI workflow，支持参数调节
+- 视频参数：832×480 默认、81帧（~5秒@16fps）、CFG/Steps/FPS 可调
 
 ### v3.0 (2026-05-30)
 - **新增 Provider 抽象层**：LLM 和图像生成解耦，支持自由切换本地/云端

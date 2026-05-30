@@ -11,7 +11,7 @@ import io
 import re
 
 from config_manager import load_config, save_config, DEFAULT_CONFIG
-from providers import LLM_PROVIDERS, IMAGE_PROVIDERS
+from providers import LLM_PROVIDERS, IMAGE_PROVIDERS, WanVideoProvider
 
 # ── Paths ──────────────────────────────────────────
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -62,6 +62,10 @@ class AIImageStudio:
         self.tab_comic = tk.Frame(self.notebook, bg="#1a1a2e")
         self.notebook.add(self.tab_comic, text="📖 漫画工作室")
         self.build_comic_ui(self.tab_comic)
+
+        self.tab_video = tk.Frame(self.notebook, bg="#1a1a2e")
+        self.notebook.add(self.tab_video, text="🎬 视频生成")
+        self.build_video_ui(self.tab_video)
 
         self.tab_settings = tk.Frame(self.notebook, bg="#1a1a2e")
         self.notebook.add(self.tab_settings, text="⚙️ 设置")
@@ -124,6 +128,14 @@ class AIImageStudio:
                 api_key=cfg.get("api_key", ""),
                 model=cfg.get("model", "stabilityai/stable-diffusion-3-5-large"),
             )
+
+        # WanVideo is always available (uses same ComfyUI backend)
+        cfg = self.config.get("comfyui", {})
+        self.wanvideo = WanVideoProvider(
+            base_url=cfg.get("base_url", "http://127.0.0.1:8188"),
+            workflow_dir=WORKFLOW_DIR,
+            output_dir=cfg.get("output_dir") or OUTPUT_DIR_DEFAULT,
+        )
 
     def _reinit_providers(self):
         self._init_providers()
@@ -1099,6 +1111,224 @@ sitting at desk reading book, wearing glasses and school uniform""")
             self.thumb_canvas.yview_moveto(1.0)
         except Exception as e:
             print(f"Thumbnail error: {e}")
+
+
+    # ═══════════════════════════════════════════════
+    #  Tab 4: 视频生成
+    # ═══════════════════════════════════════════════
+
+    def build_video_ui(self, parent):
+        main_frame = tk.Frame(parent, bg="#1a1a2e", padx=20, pady=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(main_frame, text="🎬 AI Video Studio", font=("Microsoft YaHei", 22, "bold"),
+                 bg="#1a1a2e", fg="#e94560").pack(pady=(0, 5))
+        tk.Label(main_frame, text="Chinese Prompt → LLM Optimize → Wan2.1 Video Generate",
+                 font=("Microsoft YaHei", 11), bg="#1a1a2e", fg="#a0a0a0").pack(pady=(0, 15))
+
+        # Service status
+        svc_frame = tk.Frame(main_frame, bg="#16213e", bd=2, relief=tk.RIDGE, padx=15, pady=10)
+        svc_frame.pack(fill=tk.X, pady=(0, 15))
+        tk.Label(svc_frame, text="Service Status", font=("Microsoft YaHei", 12, "bold"),
+                 bg="#16213e", fg="#fff").pack(anchor=tk.W)
+        self.video_llm_status = tk.Label(svc_frame, text="LLM: Checking...", bg="#16213e", fg="#ff6b6b")
+        self.video_llm_status.pack(anchor=tk.W, pady=2)
+        self.video_wan_status = tk.Label(svc_frame, text="Wan2.1: Checking...", bg="#16213e", fg="#ff6b6b")
+        self.video_wan_status.pack(anchor=tk.W, pady=2)
+
+        btn_frame = tk.Frame(svc_frame, bg="#16213e")
+        btn_frame.pack(anchor=tk.W, pady=5)
+        tk.Button(btn_frame, text="Start ComfyUI", command=self.start_comfyui,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
+        tk.Button(btn_frame, text="Refresh", command=self._check_video_services,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
+
+        # Input
+        input_frame = tk.LabelFrame(main_frame, text="Chinese Prompt",
+                                     font=("Microsoft YaHei", 12, "bold"),
+                                     bg="#1a1a2e", fg="#e94560", padx=10, pady=10)
+        input_frame.pack(fill=tk.X, pady=(0, 15))
+        self.video_prompt_input = scrolledtext.ScrolledText(
+            input_frame, height=4, font=("Microsoft YaHei", 11),
+            wrap=tk.WORD, bg="#16213e", fg="#fff", insertbackground="#fff")
+        self.video_prompt_input.pack(fill=tk.X, pady=5)
+
+        # Parameters
+        param_frame = tk.Frame(input_frame, bg="#1a1a2e")
+        param_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(param_frame, text="Size:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        self.v_width_var = tk.StringVar(value="832")
+        tk.Spinbox(param_frame, from_=480, to=1280, increment=32, textvariable=self.v_width_var,
+                   width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Label(param_frame, text="x", bg="#1a1a2e", fg="#fff").pack(side=tk.LEFT)
+        self.v_height_var = tk.StringVar(value="480")
+        tk.Spinbox(param_frame, from_=480, to=720, increment=32, textvariable=self.v_height_var,
+                   width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame, text="  Frames:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.v_frames_var = tk.StringVar(value="81")
+        tk.Spinbox(param_frame, from_=33, to=121, increment=8, textvariable=self.v_frames_var,
+                   width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame, text="  Steps:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.v_steps_var = tk.StringVar(value="20")
+        tk.Spinbox(param_frame, from_=10, to=50, increment=5, textvariable=self.v_steps_var,
+                   width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame, text="  CFG:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.v_cfg_var = tk.StringVar(value="5.0")
+        tk.Spinbox(param_frame, from_=1.0, to=10.0, increment=0.5, textvariable=self.v_cfg_var,
+                   width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame, text="  FPS:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.v_fps_var = tk.StringVar(value="16")
+        tk.Spinbox(param_frame, from_=8, to=30, increment=2, textvariable=self.v_fps_var,
+                   width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        # Generate button
+        tk.Button(main_frame, text="🎬 GENERATE VIDEO", command=self.generate_video,
+                  bg="#e94560", fg="#fff", font=("Microsoft YaHei", 14, "bold"),
+                  height=2).pack(fill=tk.X, pady=(0, 15))
+
+        # Progress
+        self.video_progress = ttk.Progressbar(main_frame, mode="indeterminate")
+        self.video_progress.pack(fill=tk.X, pady=(0, 10))
+
+        # Output
+        out_frame = tk.Frame(main_frame, bg="#1a1a2e")
+        out_frame.pack(fill=tk.BOTH, expand=True)
+
+        left_frame = tk.LabelFrame(out_frame, text="Optimized English Prompt",
+                                    font=("Microsoft YaHei", 11, "bold"),
+                                    bg="#1a1a2e", fg="#00d9ff", padx=5, pady=5)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        self.video_en_prompt = scrolledtext.ScrolledText(
+            left_frame, height=8, font=("Consolas", 10), wrap=tk.WORD,
+            bg="#16213e", fg="#00ff88", insertbackground="#fff")
+        self.video_en_prompt.pack(fill=tk.BOTH, expand=True)
+
+        right_frame = tk.LabelFrame(out_frame, text="Generated Video",
+                                     font=("Microsoft YaHei", 11, "bold"),
+                                     bg="#1a1a2e", fg="#e94560", padx=5, pady=5)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        self.video_status_label = tk.Label(right_frame, bg="#16213e",
+                                            text="[Waiting...]\n\nWan2.1 T2V 14B\nVideo generation takes 5-15 minutes",
+                                            fg="#666", font=("Microsoft YaHei", 11))
+        self.video_status_label.pack(fill=tk.BOTH, expand=True)
+
+    def _check_video_services(self):
+        def check():
+            llm_ok = self.llm.is_available() if self.llm else False
+            wan_ok = self.wanvideo.is_available() if self.wanvideo else False
+
+            llm_label = self.llm.label if self.llm else "None"
+            llm_color = "#51cf66" if llm_ok else "#ff6b6b"
+            wan_color = "#51cf66" if wan_ok else "#fcc419"
+
+            self.video_llm_status.config(
+                text=f"LLM [{llm_label}]: {'OK' if llm_ok else 'Not Available'}",
+                fg=llm_color)
+            self.video_wan_status.config(
+                text=f"Wan2.1: {'OK' if wan_ok else 'Not Available (start ComfyUI)'}",
+                fg=wan_color)
+            self.status_var.set("Ready")
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def generate_video(self):
+        chinese = self.video_prompt_input.get("1.0", tk.END).strip()
+        if not chinese:
+            messagebox.showwarning("Tip", "Please enter a Chinese prompt")
+            return
+        if not self.llm or not self.llm.is_available():
+            messagebox.showwarning("Tip", "LLM provider is not available")
+            return
+        if not self.wanvideo or not self.wanvideo.is_available():
+            messagebox.showwarning("Tip", "Wan2.1 is not available. Start ComfyUI first.")
+            return
+
+        self.video_progress.start()
+        self.video_status_label.config(text="Optimizing prompt...", fg="#e94560")
+        self.status_var.set("Generating video...")
+        self.root.update()
+
+        def run():
+            try:
+                # Video-specific prompt optimization
+                video_system = f"""You are an expert AI video generation prompt engineer. Convert Chinese to a detailed English video prompt.
+
+Rules:
+1. Translate accurately and vividly
+2. Describe MOTION specifically: camera movement, subject action, scene dynamics
+3. Add video quality tags: cinematic, smooth motion, 4K, high frame rate
+4. Describe lighting, atmosphere, visual style
+5. Output ONLY the English prompt, nothing else
+6. Keep under 200 tokens for best results
+
+Chinese description: {chinese}
+
+English video prompt:"""
+
+                if hasattr(self.llm, '_build_single_prompt'):
+                    en_prompt = self.llm.optimize_single(
+                        f"视频：{chinese}。请描述动态画面、镜头运动、光影变化。")
+                else:
+                    en_prompt = f"{chinese}, cinematic, smooth camera motion, high quality, 4K, detailed lighting, dynamic scene"
+
+                self.video_en_prompt.delete("1.0", tk.END)
+                self.video_en_prompt.insert(tk.END, en_prompt)
+                self.video_status_label.config(
+                    text=f"Generating video...\nThis may take 5-15 minutes\n\n{en_prompt[:100]}...",
+                    fg="#e94560")
+                self.root.update()
+
+                width = int(self.v_width_var.get())
+                height = int(self.v_height_var.get())
+                num_frames = int(self.v_frames_var.get())
+                steps = int(self.v_steps_var.get())
+                cfg = float(self.v_cfg_var.get())
+                fps = int(self.v_fps_var.get())
+                duration = num_frames / fps
+
+                result = self.wanvideo.generate(
+                    prompt=en_prompt,
+                    negative_prompt="blurry, low quality, distorted, jittery, static, watermark, text, subtitles, bad quality, worst quality, ugly, deformed",
+                    width=width, height=height, steps=steps,
+                    num_frames=num_frames, cfg=cfg, frame_rate=fps,
+                    preview_enabled=True,
+                )
+
+                save_path = result.save_path or os.path.join(OUTPUT_DIR_DEFAULT, result.filename)
+                with open(save_path, "wb") as f:
+                    f.write(result.image_data)
+
+                file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
+                self.video_status_label.config(
+                    text=f"✅ Done!\n\nSaved: {result.filename}\n"
+                         f"Size: {file_size_mb:.1f} MB | "
+                         f"Duration: {duration:.1f}s | "
+                         f"{width}×{height} @ {fps}fps\n\n"
+                         f"Click to open folder",
+                    fg="#51cf66")
+                self.video_status_label.bind("<Button-1>",
+                    lambda e: os.startfile(os.path.dirname(save_path)))
+                self.video_status_label.config(cursor="hand2")
+                self.status_var.set(f"Video saved: {result.filename}")
+
+            except Exception as e:
+                self.video_status_label.config(text=f"❌ Error: {e}", fg="#ff6b6b")
+                self.status_var.set(f"Video error: {e}")
+                messagebox.showerror("Video Generation Failed", str(e))
+            finally:
+                self.video_progress.stop()
+
+        threading.Thread(target=run, daemon=True).start()
 
 
 def main():
