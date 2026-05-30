@@ -1,6 +1,6 @@
 # 你自己的AI生图 (Your Own AI Image Gen)
 
-🎨 本地运行、无需联网的 AI 图像生成工具。支持单图生成和漫画分镜批量创作，角色一致性好。
+🎨 AI 图像生成工具，支持**本地运行**和**云端 API** 两种模式。单图生成 + 漫画分镜批量创作，角色一致性好。
 
 ---
 
@@ -68,6 +68,8 @@
 | 🎬 **电影级分镜** | 自动构图变化 + 氛围渲染 + 表情动作加权 |
 | 🔧 **模型切换** | 支持 dreamshaper / pony / meinamix 等多种模型 |
 | 🖥️ **纯本地** | 所有模型、推理、图片全部在本地完成，无需联网 |
+| ☁️ **云端 API** | v3.0 新增：支持 OpenAI/Claude/DeepSeek 优化 + Stability AI/SiliconFlow 生图 |
+| ⚙️ **可视化设置** | API Key 管理、模型切换、本地/云端一键切换，无需改代码 |
 
 ---
 
@@ -75,8 +77,10 @@
 
 - **操作系统**：Windows 10/11（Linux/macOS 需自行修改启动脚本）
 - **Python**：3.10+
-- **GPU**：NVIDIA 显卡，至少 2.5GB 显存（轻量模型）/ 4GB+（标准）/ 8GB+（SDXL高清）
-- **依赖**：Ollama（提示词优化）+ ComfyUI（图像生成）+ **IPAdapter Plus**（角色一致性）
+- **GPU（本地模式）**：NVIDIA 显卡，至少 2.5GB 显存（轻量模型）/ 4GB+（标准）/ 8GB+（SDXL高清）
+- **云端模式**：无需 GPU，仅需 API Key
+- **本地依赖**：Ollama（提示词优化）+ ComfyUI（图像生成）+ **IPAdapter Plus**（角色一致性）
+- **云端依赖**：OpenAI / Claude / DeepSeek API Key（任意一个即可）+ Stability AI / 硅基流动 API Key（可选）
 
 ### 自动性能适配（v2.1 新增）
 
@@ -99,7 +103,7 @@
 ## 界面展示
 
 ### 🎨 单图生成
-单图生成界面，中文提示词自动翻译优化：
+中文提示词 → LLM 自动优化 → 本地/云端出图：
 
 ![单图生成](screenshots/02_single_image.png)
 
@@ -107,6 +111,11 @@
 角色设定 + 分镜脚本 + 电影级提示词优化，一键批量生成同角色剧情分镜：
 
 ![漫画工作室](screenshots/03_comic_studio.png)
+
+### ⚙️ 设置（v3.0 新增）
+一键切换 LLM 和图像生成 Provider，支持 OpenAI / Claude / DeepSeek / Stability AI / 硅基流动：
+
+![设置](screenshots/05_settings.png)
 
 ### 🧠 IPAdapter 角色一致性
 基于参考图注入角色面部特征，跨场景保持同一张脸，动作完全自由：
@@ -178,9 +187,23 @@
 
 > **注意**：模型由第三方提供，下载和使用请遵守 Civitai 平台规则及模型作者的使用条款。
 
-### 3. 运行
+### 3. （可选）配置云端 API
 
-双击 `start.bat` 启动程序（会自动检测并启动 Ollama 和 ComfyUI）。
+打开程序 → 切换到「⚙️ 设置」Tab → 填入 API Key → 选择 Provider → 保存。
+
+支持的云端 Provider：
+
+| 类型 | Provider | 说明 |
+|---|---|---|
+| LLM 优化 | **DeepSeek** | 便宜实惠，中文友好 |
+| LLM 优化 | **OpenAI** | GPT-4o-mini，质量最高 |
+| LLM 优化 | **Claude** | Sonnet，prompt 工程最强 |
+| 图像生成 | **Stability AI** | SDXL，速度最快 |
+| 图像生成 | **SiliconFlow 硅基流动** | 国内访问友好，支持 SD3.5/FLUX |
+
+### 4. 运行
+
+双击 `start.bat` 启动程序（本地模式自动检测并启动 Ollama 和 ComfyUI；云端模式填好 Key 即可用）。
 
 ---
 
@@ -215,7 +238,18 @@
 
 ```
 your-own-ai-image-gen/
-├── ai_image_studio.py        # 主程序（双 Tab GUI + GPU自适应）
+├── ai_image_studio.py        # 主程序（三 Tab GUI + Provider 模式）
+├── config_manager.py          # JSON 配置持久化（v3.0 新增）
+├── providers/                 # Provider 抽象层（v3.0 新增）
+│   ├── llm_base.py            #   LLM 抽象基类 + Prompt 模板
+│   ├── ollama_llm.py          #   Ollama 本地
+│   ├── openai_llm.py          #   OpenAI 云端
+│   ├── claude_llm.py          #   Claude 云端
+│   ├── deepseek_llm.py        #   DeepSeek 云端
+│   ├── image_base.py          #   生图抽象基类
+│   ├── comfyui_image.py       #   ComfyUI 本地
+│   ├── stability_image.py     #   Stability AI 云端
+│   └── siliconflow_image.py   #   硅基流动 云端
 ├── requirements.txt           # Python 依赖
 ├── workflows/
 │   ├── txt2img_api.json       # 单图生成 workflow
@@ -276,3 +310,14 @@ your-own-ai-image-gen/
 ---
 
 *本项目由 Eric-huang799 维护。如有技术问题，欢迎提交 Issue 讨论。*
+
+---
+
+## 更新日志
+
+### v3.0 (2026-05-30)
+- **新增 Provider 抽象层**：LLM 和图像生成解耦，支持自由切换本地/云端
+- **新增云端 API 支持**：OpenAI / Claude / DeepSeek（LLM）+ Stability AI / 硅基流动（图像）
+- **新增设置 Tab**：可视化配置 API Key、选择 Provider，无需改代码
+- **修复**：`optimize_comic_prompt` 方法重复代码 bug
+- **重构**：三处重复 workflow 设置代码收拢到 `ComfyUIProvider`

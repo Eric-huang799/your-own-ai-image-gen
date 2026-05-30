@@ -1,5 +1,4 @@
 import subprocess
-import requests
 import json
 import os
 import sys
@@ -11,224 +10,156 @@ from PIL import Image, ImageTk
 import io
 import re
 
-# ============ 配置 ============
-OLLAMA_URL = "http://127.0.0.1:11434"
-COMFYUI_URL = "http://127.0.0.1:8189"
-COMFYUI_ALT_URL = "http://127.0.0.1:8188"
-WORKFLOW_TXT2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "txt2img_api.json")
-WORKFLOW_IMG2IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "img2img_api.json")
-WORKFLOW_IPADAPTER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "ipadapter_api.json")
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+from config_manager import load_config, save_config, DEFAULT_CONFIG
+from providers import LLM_PROVIDERS, IMAGE_PROVIDERS
 
-# ---- ComfyUI 路径自动检测 ----
-def _find_comfyui():
-    candidates = [
-        os.path.expanduser("~/ComfyUI"), os.path.expanduser("~/comfyui"),
-        "C:/ComfyUI", "D:/ComfyUI", os.path.expanduser("~/Documents/ComfyUI"),
-    ]
-    for base in candidates:
-        mp = os.path.join(base, "main.py")
-        if os.path.exists(mp): return base, mp
-    return None, None
+# ── Paths ──────────────────────────────────────────
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+WORKFLOW_DIR = os.path.join(PROJECT_DIR, "workflows")
+OUTPUT_DIR_DEFAULT = os.path.join(PROJECT_DIR, "output")
+COMFYUI_START_BAT = os.path.expanduser("~/.openclaw/workspace/start_comfy_conda.bat")
+CONDA_PYTHON = os.path.expanduser("~/.conda/envs/comfyui/python.exe")
+COMFYUI_MAIN = os.path.expanduser("~/ComfyUI/main.py")
+COMFYUI_INPUT_DIR = os.path.expanduser("~/ComfyUI/input")
 
-COMFYUI_BASE, COMFYUI_MAIN = _find_comfyui()
-if COMFYUI_BASE:
-    COMFYUI_INPUT_DIR = os.path.join(COMFYUI_BASE, "input")
-    os.makedirs(COMFYUI_INPUT_DIR, exist_ok=True)
-else:
-    COMFYUI_INPUT_DIR = None
-
-COMFYUI_START_BAT = None
-CONDA_PYTHON = sys.executable
-
-# ---- GPU 检测 ----
-GPU_VRAM_MB = 0
-GPU_NAME = "Unknown"
-
-def _detect_gpu():
-    global GPU_VRAM_MB, GPU_NAME
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-            timeout=5, encoding="utf-8", errors="replace"
-        ).strip()
-        parts = out.split(",")
-        GPU_NAME = parts[0].strip()
-        GPU_VRAM_MB = int(parts[1].strip())
-    except:
-        try:
-            import torch
-            if torch.cuda.is_available():
-                GPU_NAME = torch.cuda.get_device_name(0)
-                GPU_VRAM_MB = torch.cuda.get_device_properties(0).total_memory // (1024*1024)
-        except:
-            pass
-
-_detect_gpu()
-
-# ---- 模型数据库 (VRAM需求为估算值，实际可能±20%) ----
-MODEL_DB = {
-    "dreamshaper_8.safetensors": {
-        "name": "Dreamshaper 8 (SD 1.5)",
-        "vram_mb": 2500, "tier": "light", "type": "写实/通用",
-        "url": "https://civitai.com/models/4384/dreamshaper",
-        "desc": "通用写实风格，最低配置要求，适合入门"
-    },
-    "meinamix_v12Final.safetensors": {
-        "name": "Meinamix v12 (SD 1.5)",
-        "vram_mb": 2500, "tier": "light", "type": "二次元萌系",
-        "url": "https://civitai.com/models/7240/meinamix",
-        "desc": "二次元动漫风格，角色一致性最佳"
-    },
-    "AnythingV5_v5PrtRE.safetensors": {
-        "name": "Anything V5 (SD 1.5)",
-        "vram_mb": 2500, "tier": "light", "type": "二次元通用",
-        "url": "https://civitai.com/models/9409/or-anything-v5",
-        "desc": "二次元通用替代方案，显存要求低"
-    },
-    "counterfeitV30_v30.safetensors": {
-        "name": "Counterfeit V3.0 (SD 1.5)",
-        "vram_mb": 2500, "tier": "light", "type": "二次元精致",
-        "url": "https://civitai.com/models/4468/counterfeit-v30",
-        "desc": "精致二次元风格，替代meinamix"
-    },
-    "ponyDiffusionV6XL_v6.safetensors": {
-        "name": "Pony Diffusion XL V6",
-        "vram_mb": 7000, "tier": "heavy", "type": "二次元插画(SDXL)",
-        "url": "https://civitai.com/models/257749/pony-diffusion-xl-v6",
-        "desc": "SDXL高清，需8GB+显存，低配电脑慎用"
-    },
-}
-
-def get_model_tier(vram_mb):
-    """根据GPU显存推荐模型等级"""
-    if vram_mb >= 8000: return "heavy"
-    if vram_mb >= 4000: return "medium"
-    return "light"
-
-def scan_available_models():
-    """扫描 ComfyUI checkpoints 目录中实际存在的模型"""
-    available = []
-    if COMFYUI_BASE:
-        ckpt_dir = os.path.join(COMFYUI_BASE, "models", "checkpoints")
-        if os.path.isdir(ckpt_dir):
-            for f in os.listdir(ckpt_dir):
-                if f.endswith((".safetensors", ".ckpt")):
-                    available.append(f)
-    return available
-
-def get_model_choices():
-    """合并数据库模型 + 本地已下载模型，返回推荐排序列表"""
-    available = scan_available_models()
-    tier = get_model_tier(GPU_VRAM_MB)
-    choices = []
-    for fname, info in sorted(MODEL_DB.items(), key=lambda x: x[1]["vram_mb"]):
-        tag = "✓已下载" if fname in available else "⬇需下载"
-        tier_mark = "⭐推荐" if info["tier"] == tier else ("⚠高配" if info["tier"] == "heavy" else "")
-        label = f"{fname} [{info['type']}] {tag}"
-        if tier_mark: label += f" {tier_mark}"
-        choices.append((label, fname))
-    # 追加数据库外的已下载模型
-    for f in available:
-        if f not in MODEL_DB:
-            choices.append((f"{f} [本地已下载]", f))
-    return choices
-
-def suggest_model():
-    """根据GPU返回推荐模型文件名"""
-    tier = get_model_tier(GPU_VRAM_MB)
-    available = scan_available_models()
-    for fname, info in sorted(MODEL_DB.items(), key=lambda x: x[1]["vram_mb"]):
-        if info["tier"] == tier and fname in available:
-            return fname
-    for fname, info in sorted(MODEL_DB.items(), key=lambda x: x[1]["vram_mb"]):
-        if info["tier"] == tier:
-            return fname
-    return "dreamshaper_8.safetensors"
+os.makedirs(OUTPUT_DIR_DEFAULT, exist_ok=True)
+os.makedirs(COMFYUI_INPUT_DIR, exist_ok=True)
 
 
 class AIImageStudio:
     def __init__(self, root):
         self.root = root
-        root.title("AI Image Studio - MOSS Edition v2.0")
-        root.geometry("1100x980")
-        root.configure(bg="#1a1a2e")
-        
-        self.comfy_url = COMFYUI_URL
+        self.root.title("AI Image Studio - MOSS Edition v3.0")
+        self.root.geometry("1100x980")
+        self.root.configure(bg="#1a1a2e")
+
+        # ── Config & Providers ──
+        self.config = load_config()
+        self.llm = None
+        self.image_provider = None
+        self._init_providers()
+
+        # ── State ──
         self.comic_generating = False
         self.reference_image_path = None
         self.thumbnails = []
-        
-        # 状态栏
-        gpu_info = f" | GPU: {GPU_NAME} ({GPU_VRAM_MB}MB) | 推荐: {'轻量' if get_model_tier(GPU_VRAM_MB)=='light' else '标准' if get_model_tier(GPU_VRAM_MB)=='medium' else '高性能'}模型" if GPU_VRAM_MB > 0 else " | GPU: 未检测到(将使用CPU,速度较慢)"
-        self.status_var = tk.StringVar(value=f"Initializing...{gpu_info}")
-        self.status_bar = tk.Label(root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W, bg="#16213e", fg="#e94560")
+
+        # ── Status Bar ──
+        self.status_var = tk.StringVar(value="Initializing...")
+        self.status_bar = tk.Label(
+            root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN,
+            anchor=tk.W, bg="#16213e", fg="#e94560")
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        
-        # ============ Notebook / Tabs ============
+
+        # ── Notebook ──
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Tab 1: 单图生成
+
         self.tab_single = tk.Frame(self.notebook, bg="#1a1a2e")
         self.notebook.add(self.tab_single, text="🎨 单图生成")
         self.build_single_ui(self.tab_single)
-        
-        # Tab 2: 漫画工作室
+
         self.tab_comic = tk.Frame(self.notebook, bg="#1a1a2e")
         self.notebook.add(self.tab_comic, text="📖 漫画工作室")
         self.build_comic_ui(self.tab_comic)
-        
+
+        self.tab_settings = tk.Frame(self.notebook, bg="#1a1a2e")
+        self.notebook.add(self.tab_settings, text="⚙️ 设置")
+        self.build_settings_ui(self.tab_settings)
+
         self.check_services()
-    
-    # ============ 服务检查 ============
+
+    # ═══════════════════════════════════════════════
+    #  Provider Management
+    # ═══════════════════════════════════════════════
+
+    def _init_providers(self):
+        llm_name = self.config.get("llm_provider", "ollama")
+        img_name = self.config.get("image_provider", "comfyui")
+
+        if llm_name == "ollama":
+            cfg = self.config.get("ollama", {})
+            self.llm = LLM_PROVIDERS["ollama"](
+                base_url=cfg.get("base_url", "http://127.0.0.1:11434"),
+                model=cfg.get("model", "wizardlm-uncensored"),
+            )
+        elif llm_name == "openai":
+            cfg = self.config.get("openai", {})
+            self.llm = LLM_PROVIDERS["openai"](
+                api_key=cfg.get("api_key", ""),
+                model=cfg.get("model", "gpt-4o-mini"),
+                base_url=cfg.get("base_url", "https://api.openai.com/v1"),
+            )
+        elif llm_name == "claude":
+            cfg = self.config.get("claude", {})
+            self.llm = LLM_PROVIDERS["claude"](
+                api_key=cfg.get("api_key", ""),
+                model=cfg.get("model", "claude-sonnet-4-6"),
+                base_url=cfg.get("base_url", "https://api.anthropic.com/v1"),
+            )
+        elif llm_name == "deepseek":
+            cfg = self.config.get("deepseek", {})
+            self.llm = LLM_PROVIDERS["deepseek"](
+                api_key=cfg.get("api_key", ""),
+                model=cfg.get("model", "deepseek-chat"),
+                base_url=cfg.get("base_url", "https://api.deepseek.com/v1"),
+            )
+
+        if img_name == "comfyui":
+            cfg = self.config.get("comfyui", {})
+            self.image_provider = IMAGE_PROVIDERS["comfyui"](
+                base_url=cfg.get("base_url", "http://127.0.0.1:8188"),
+                workflow_dir=WORKFLOW_DIR,
+                output_dir=cfg.get("output_dir") or OUTPUT_DIR_DEFAULT,
+            )
+        elif img_name == "stability":
+            cfg = self.config.get("stability", {})
+            self.image_provider = IMAGE_PROVIDERS["stability"](
+                api_key=cfg.get("api_key", ""),
+                model=cfg.get("model", "stable-diffusion-xl-1024-v1-0"),
+            )
+        elif img_name == "siliconflow":
+            cfg = self.config.get("siliconflow", {})
+            self.image_provider = IMAGE_PROVIDERS["siliconflow"](
+                api_key=cfg.get("api_key", ""),
+                model=cfg.get("model", "stabilityai/stable-diffusion-3-5-large"),
+            )
+
+    def _reinit_providers(self):
+        self._init_providers()
+        self.check_services()
+
+    # ═══════════════════════════════════════════════
+    #  Service Check
+    # ═══════════════════════════════════════════════
+
     def check_services(self):
         def check():
-            # Ollama
-            try:
-                r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
-                if r.status_code == 200:
-                    data = r.json()
-                    models = [m.get('name', '') for m in data.get('models', [])]
-                    has_wizard = any('wizardlm' in m.lower() for m in models)
-                    status = "Ollama: OK"
-                    if has_wizard:
-                        status += " (wizardlm ready)"
-                    self.ollama_status.config(text=status, fg="#51cf66")
-                    self.ollama_status2.config(text=status, fg="#51cf66")
-                else:
-                    self.ollama_status.config(text="Ollama: not ready", fg="#fcc419")
-                    self.ollama_status2.config(text="Ollama: not ready", fg="#fcc419")
-            except:
-                self.ollama_status.config(text="Ollama: offline", fg="#ff6b6b")
-                self.ollama_status2.config(text="Ollama: offline", fg="#ff6b6b")
-            
-            # ComfyUI
-            comfy_ok = False
-            self.comfy_url = COMFYUI_ALT_URL
-            for url in [COMFYUI_ALT_URL, COMFYUI_URL]:
-                try:
-                    r = requests.get(f"{url}/system_stats", timeout=2)
-                    if r.status_code == 200:
-                        r.json()
-                        comfy_ok = True
-                        self.comfy_url = url
-                        break
-                except:
-                    pass
-            
-            if comfy_ok:
-                self.comfy_status.config(text=f"ComfyUI: OK ({self.comfy_url})", fg="#51cf66")
-                self.comfy_status2.config(text=f"ComfyUI: OK ({self.comfy_url})", fg="#51cf66")
-            else:
-                self.comfy_status.config(text="ComfyUI: offline", fg="#ff6b6b")
-                self.comfy_status2.config(text="ComfyUI: offline", fg="#ff6b6b")
-            
+            llm_ok = self.llm.is_available() if self.llm else False
+            img_ok = self.image_provider.is_available() if self.image_provider else False
+
+            llm_label = self.llm.label if self.llm else "None"
+            img_label = self.image_provider.label if self.image_provider else "None"
+
+            color_ok = "#51cf66"
+            color_fail = "#ff6b6b"
+            color_warn = "#fcc419"
+
+            llm_color = color_ok if llm_ok else color_fail
+            img_color = color_ok if img_ok else color_warn
+
+            llm_text = f"LLM [{llm_label}]: {'OK' if llm_ok else 'Not Available'}"
+            img_text = f"Image [{img_label}]: {'OK' if img_ok else 'Not Available'}"
+
+            self.ollama_status.config(text=llm_text, fg=llm_color)
+            self.ollama_status2.config(text=llm_text, fg=llm_color)
+            self.comfy_status.config(text=img_text, fg=img_color)
+            self.comfy_status2.config(text=img_text, fg=img_color)
+
             self.status_var.set("Ready")
-        
+
         threading.Thread(target=check, daemon=True).start()
-    
+
     def start_ollama(self):
         self.status_var.set("Starting Ollama...")
         try:
@@ -237,622 +168,650 @@ class AIImageStudio:
             messagebox.showerror("Error", f"Cannot start Ollama: {e}")
         time.sleep(3)
         self.check_services()
-    
+
     def start_comfyui(self):
         self.status_var.set("Starting ComfyUI...")
         try:
-            for url in [COMFYUI_ALT_URL, COMFYUI_URL]:
-                try:
-                    r = requests.get(f"{url}/system_stats", timeout=2)
-                    if r.status_code == 200:
-                        self.comfy_url = url
-                        self.status_var.set(f"ComfyUI already running at {url}")
-                        self.check_services()
-                        return
-                except:
-                    pass
-
-            # 尝试多种方式启动 ComfyUI
-            started = False
-
-            # ComfyUI 启动参数 (RTX 50系列兼容)
-            comfy_args = ["--listen", "127.0.0.1", "--port", "8188",
-                         "--use-pytorch-cross-attention"]  # Blackwell GPU兼容
-
-            # 方式1: conda env (用户可能有 comfyui 环境)
-            for conda_env in ["comfyui", "ComfyUI", "base"]:
-                conda_python = os.path.expanduser(f"~/.conda/envs/{conda_env}/python.exe")
-                if os.path.exists(conda_python) and COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
-                    try:
-                        subprocess.Popen([conda_python, COMFYUI_MAIN] + comfy_args,
-                                       creationflags=subprocess.CREATE_NEW_CONSOLE)
-                        started = True
-                        break
-                    except:
-                        pass
-
-            # 方式2: 系统 Python (如果装了 torch)
-            if not started and COMFYUI_MAIN and os.path.exists(COMFYUI_MAIN):
-                try:
-                    subprocess.Popen([sys.executable, COMFYUI_MAIN] + comfy_args,
-                                   creationflags=subprocess.CREATE_NEW_CONSOLE)
-                    started = True
-                except:
-                    pass
-
-            if not started:
-                msg = "Cannot start ComfyUI automatically.\n\n"
-                msg += "Please start ComfyUI manually:\n"
-                msg += "  cd ~/ComfyUI\n"
-                msg += "  python main.py --listen 127.0.0.1 --port 8188\n\n"
-                if COMFYUI_MAIN:
-                    msg += f"Detected at: {COMFYUI_MAIN}\n"
-                messagebox.showwarning("ComfyUI", msg)
+            if os.path.exists(COMFYUI_START_BAT):
+                subprocess.Popen([COMFYUI_START_BAT], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            elif os.path.exists(CONDA_PYTHON) and os.path.exists(COMFYUI_MAIN):
+                subprocess.Popen(
+                    [CONDA_PYTHON, COMFYUI_MAIN, "--listen", "127.0.0.1", "--port", "8188"],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+            else:
+                messagebox.showerror("Error", "Cannot find ComfyUI startup script")
                 return
         except Exception as e:
             messagebox.showerror("Error", f"Cannot start ComfyUI: {e}")
-        
+
         def wait():
             for i in range(60):
                 time.sleep(2)
-                self.status_var.set(f"Waiting for ComfyUI... ({i+1}/60)")
-                for url in [COMFYUI_ALT_URL, COMFYUI_URL]:
-                    try:
-                        r = requests.get(f"{url}/system_stats", timeout=2)
-                        if r.status_code == 200:
-                            self.comfy_url = url
-                            self.status_var.set(f"ComfyUI started at {url}")
-                            self.check_services()
-                            return
-                    except:
-                        pass
+                self.status_var.set(f"Waiting for ComfyUI... ({i + 1}/60)")
+                if self.image_provider and self.image_provider.is_available():
+                    self.status_var.set("ComfyUI started")
+                    self.check_services()
+                    return
             self.status_var.set("ComfyUI startup timeout")
-        
+
         threading.Thread(target=wait, daemon=True).start()
-    
-    # ============ 单图生成 UI ============
+
+    # ═══════════════════════════════════════════════
+    #  Prompt Helpers
+    # ═══════════════════════════════════════════════
+
+    def protect_character_colors(self, char_desc):
+        colors = [
+            "black", "brown", "blonde", "blond", "golden", "silver",
+            "white", "red", "blue", "green", "purple", "pink", "gray",
+            "grey", "auburn", "chestnut",
+        ]
+        protected = char_desc
+        for color in colors:
+            pattern = r"\b(" + color + r")\b(?!\s*\:)"
+            protected = re.sub(pattern, r"(\1:1.3)", protected, flags=re.IGNORECASE)
+        protected = re.sub(r"\((\([^)]+\:1\.3\)\:1\.3)\)", r"\1", protected)
+        return protected
+
+    def get_camera_variation(self, idx):
+        variations = [
+            "front view, medium shot, centered composition",
+            "three-quarter view, medium close-up, slightly off-center",
+            "side profile view, medium shot, rule of thirds composition",
+            "from slightly above, medium shot, looking down angle",
+            "from below, medium close-up, heroic angle",
+            "dutch angle, medium shot, dynamic tilt",
+            "over-the-shoulder shot, close-up on face",
+            "wide shot, full body visible, environmental context",
+        ]
+        return variations[idx % len(variations)]
+
+    # ═══════════════════════════════════════════════
+    #  Image Display Helper
+    # ═══════════════════════════════════════════════
+
+    def show_image_in_label(self, img_data, label_widget, max_size=(450, 450)):
+        try:
+            img = Image.open(io.BytesIO(img_data))
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            label_widget.config(image=photo, text="")
+            label_widget.image = photo
+        except Exception as e:
+            label_widget.config(text=f"[Display error: {e}]")
+
+    # ═══════════════════════════════════════════════
+    #  Tab 1: 单图生成
+    # ═══════════════════════════════════════════════
+
     def build_single_ui(self, parent):
         main_frame = tk.Frame(parent, bg="#1a1a2e", padx=20, pady=20)
         main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # 标题
-        title = tk.Label(main_frame, text="AI Image Studio", font=("Microsoft YaHei", 24, "bold"), bg="#1a1a2e", fg="#e94560")
-        title.pack(pady=(0, 5))
-        subtitle = tk.Label(main_frame, text="Chinese Prompt -> WizardLM Optimize -> ComfyUI Generate", font=("Microsoft YaHei", 11), bg="#1a1a2e", fg="#a0a0a0")
-        subtitle.pack(pady=(0, 15))
-        
-        # 服务状态
+
+        tk.Label(main_frame, text="AI Image Studio", font=("Microsoft YaHei", 24, "bold"),
+                 bg="#1a1a2e", fg="#e94560").pack(pady=(0, 5))
+        tk.Label(main_frame, text="Chinese Prompt -> LLM Optimize -> Image Generate",
+                 font=("Microsoft YaHei", 11), bg="#1a1a2e", fg="#a0a0a0").pack(pady=(0, 15))
+
+        # Service status
         svc_frame = tk.Frame(main_frame, bg="#16213e", bd=2, relief=tk.RIDGE, padx=15, pady=10)
         svc_frame.pack(fill=tk.X, pady=(0, 15))
-        tk.Label(svc_frame, text="Service Status", font=("Microsoft YaHei", 12, "bold"), bg="#16213e", fg="#fff").pack(anchor=tk.W)
-        self.ollama_status = tk.Label(svc_frame, text="Ollama: Checking...", bg="#16213e", fg="#ff6b6b")
+        tk.Label(svc_frame, text="Service Status", font=("Microsoft YaHei", 12, "bold"),
+                 bg="#16213e", fg="#fff").pack(anchor=tk.W)
+        self.ollama_status = tk.Label(svc_frame, text="LLM: Checking...", bg="#16213e", fg="#ff6b6b")
         self.ollama_status.pack(anchor=tk.W, pady=2)
-        self.comfy_status = tk.Label(svc_frame, text="ComfyUI: Checking...", bg="#16213e", fg="#ff6b6b")
+        self.comfy_status = tk.Label(svc_frame, text="Image: Checking...", bg="#16213e", fg="#ff6b6b")
         self.comfy_status.pack(anchor=tk.W, pady=2)
+
         btn_frame = tk.Frame(svc_frame, bg="#16213e")
         btn_frame.pack(anchor=tk.W, pady=5)
-        tk.Button(btn_frame, text="Start Ollama", command=self.start_ollama, bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
-        tk.Button(btn_frame, text="Start ComfyUI", command=self.start_comfyui, bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
-        tk.Button(btn_frame, text="Refresh", command=self.check_services, bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
-        
-        # 输入区
-        input_frame = tk.LabelFrame(main_frame, text="Chinese Prompt", font=("Microsoft YaHei", 12, "bold"), bg="#1a1a2e", fg="#e94560", padx=10, pady=10)
+        tk.Button(btn_frame, text="Start Ollama", command=self.start_ollama,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
+        tk.Button(btn_frame, text="Start ComfyUI", command=self.start_comfyui,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
+        tk.Button(btn_frame, text="Refresh", command=self.check_services,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
+
+        # Input
+        input_frame = tk.LabelFrame(main_frame, text="Chinese Prompt",
+                                     font=("Microsoft YaHei", 12, "bold"),
+                                     bg="#1a1a2e", fg="#e94560", padx=10, pady=10)
         input_frame.pack(fill=tk.X, pady=(0, 15))
-        self.prompt_input = scrolledtext.ScrolledText(input_frame, height=4, font=("Microsoft YaHei", 11), wrap=tk.WORD, bg="#16213e", fg="#fff", insertbackground="#fff")
+        self.prompt_input = scrolledtext.ScrolledText(
+            input_frame, height=4, font=("Microsoft YaHei", 11),
+            wrap=tk.WORD, bg="#16213e", fg="#fff", insertbackground="#fff")
         self.prompt_input.pack(fill=tk.X, pady=5)
-        
-        # 参数区
+
+        # Parameters
         param_frame = tk.Frame(input_frame, bg="#1a1a2e")
         param_frame.pack(fill=tk.X, pady=5)
-        tk.Label(param_frame, text="Size:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
-        default_res = "768" if GPU_VRAM_MB > 0 and GPU_VRAM_MB < 12000 else "1024"
-        self.width_var = tk.StringVar(value=default_res)
-        tk.Spinbox(param_frame, from_=256, to=2048, increment=64, textvariable=self.width_var, width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame, text="Size:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        self.width_var = tk.StringVar(value=str(self.config["generation"]["default_width"]))
+        tk.Spinbox(param_frame, from_=256, to=2048, increment=64, textvariable=self.width_var,
+                   width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
         tk.Label(param_frame, text="x", bg="#1a1a2e", fg="#fff").pack(side=tk.LEFT)
-        self.height_var = tk.StringVar(value=default_res)
-        tk.Spinbox(param_frame, from_=256, to=2048, increment=64, textvariable=self.height_var, width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
-        tk.Label(param_frame, text="  Steps:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20,0))
-        self.steps_var = tk.StringVar(value="25")
-        tk.Spinbox(param_frame, from_=10, to=50, increment=5, textvariable=self.steps_var, width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
-        tk.Label(param_frame, text="  Model:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20,0))
-        model_choices = get_model_choices()
-        model_labels = [c[0] for c in model_choices]
-        self._model_map = {c[0]: c[1] for c in model_choices}
-        default_fname = suggest_model()
-        default_label = next((l for l, f in self._model_map.items() if f == default_fname), model_labels[0] if model_labels else "")
-        self.model_var = tk.StringVar(value=default_label)
-        model_combo = ttk.Combobox(param_frame, textvariable=self.model_var, values=model_labels, width=30, font=("Microsoft YaHei", 10))
+        self.height_var = tk.StringVar(value=str(self.config["generation"]["default_height"]))
+        tk.Spinbox(param_frame, from_=256, to=2048, increment=64, textvariable=self.height_var,
+                   width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame, text="  Steps:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.steps_var = tk.StringVar(value=str(self.config["generation"]["default_steps"]))
+        tk.Spinbox(param_frame, from_=10, to=50, increment=5, textvariable=self.steps_var,
+                   width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame, text="  Model:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.model_var = tk.StringVar(value=self.config["generation"]["default_model"])
+        model_combo = ttk.Combobox(param_frame, textvariable=self.model_var,
+                                    values=["dreamshaper_8.safetensors",
+                                            "ponyDiffusionV6XL_v6.safetensors",
+                                            "meinamix_v12Final.safetensors"],
+                                    width=22, font=("Microsoft YaHei", 10))
         model_combo.pack(side=tk.LEFT, padx=5)
-        
-        # 生成按钮
-        gen_btn = tk.Button(main_frame, text="GENERATE", command=self.generate, bg="#e94560", fg="#fff", font=("Microsoft YaHei", 14, "bold"), height=2)
-        gen_btn.pack(fill=tk.X, pady=(0, 15))
-        
-        # 进度条
-        self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
+
+        # Generate button
+        tk.Button(main_frame, text="GENERATE", command=self.generate,
+                  bg="#e94560", fg="#fff", font=("Microsoft YaHei", 14, "bold"),
+                  height=2).pack(fill=tk.X, pady=(0, 15))
+
+        # Progress
+        self.progress = ttk.Progressbar(main_frame, mode="indeterminate")
         self.progress.pack(fill=tk.X, pady=(0, 10))
-        
-        # 输出区
+
+        # Output
         out_frame = tk.Frame(main_frame, bg="#1a1a2e")
         out_frame.pack(fill=tk.BOTH, expand=True)
-        left_frame = tk.LabelFrame(out_frame, text="Optimized English Prompt", font=("Microsoft YaHei", 11, "bold"), bg="#1a1a2e", fg="#00d9ff", padx=5, pady=5)
+
+        left_frame = tk.LabelFrame(out_frame, text="Optimized English Prompt",
+                                    font=("Microsoft YaHei", 11, "bold"),
+                                    bg="#1a1a2e", fg="#00d9ff", padx=5, pady=5)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
-        self.en_prompt = scrolledtext.ScrolledText(left_frame, height=8, font=("Consolas", 10), wrap=tk.WORD, bg="#16213e", fg="#00ff88", insertbackground="#fff")
+        self.en_prompt = scrolledtext.ScrolledText(
+            left_frame, height=8, font=("Consolas", 10), wrap=tk.WORD,
+            bg="#16213e", fg="#00ff88", insertbackground="#fff")
         self.en_prompt.pack(fill=tk.BOTH, expand=True)
-        right_frame = tk.LabelFrame(out_frame, text="Generated Image", font=("Microsoft YaHei", 11, "bold"), bg="#1a1a2e", fg="#e94560", padx=5, pady=5)
+
+        right_frame = tk.LabelFrame(out_frame, text="Generated Image",
+                                     font=("Microsoft YaHei", 11, "bold"),
+                                     bg="#1a1a2e", fg="#e94560", padx=5, pady=5)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
         self.img_label = tk.Label(right_frame, bg="#16213e", text="[Waiting...]", fg="#666")
         self.img_label.pack(fill=tk.BOTH, expand=True)
-    
-    # ============ 漫画工作室 UI ============
+
+    # ═══════════════════════════════════════════════
+    #  Tab 2: 漫画工作室
+    # ═══════════════════════════════════════════════
+
     def build_comic_ui(self, parent):
         main_frame = tk.Frame(parent, bg="#1a1a2e", padx=15, pady=15)
         main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # 标题
-        title = tk.Label(main_frame, text="📖 Comic Studio", font=("Microsoft YaHei", 22, "bold"), bg="#1a1a2e", fg="#e94560")
-        title.pack(pady=(0, 5))
-        subtitle = tk.Label(main_frame, text="Character Consistency Story Generation", font=("Microsoft YaHei", 11), bg="#1a1a2e", fg="#a0a0a0")
-        subtitle.pack(pady=(0, 10))
-        
-        # 服务状态（漫画工作室也显示）
+
+        tk.Label(main_frame, text="📖 Comic Studio", font=("Microsoft YaHei", 22, "bold"),
+                 bg="#1a1a2e", fg="#e94560").pack(pady=(0, 5))
+        tk.Label(main_frame, text="Character Consistency Story Generation",
+                 font=("Microsoft YaHei", 11), bg="#1a1a2e", fg="#a0a0a0").pack(pady=(0, 10))
+
+        # Service status bar
         svc_frame = tk.Frame(main_frame, bg="#16213e", bd=2, relief=tk.RIDGE, padx=15, pady=8)
         svc_frame.pack(fill=tk.X, pady=(0, 10))
-        self.ollama_status2 = tk.Label(svc_frame, text="Ollama: Checking...", bg="#16213e", fg="#ff6b6b")
+        self.ollama_status2 = tk.Label(svc_frame, text="LLM: Checking...", bg="#16213e", fg="#ff6b6b")
         self.ollama_status2.pack(side=tk.LEFT, padx=10)
-        self.comfy_status2 = tk.Label(svc_frame, text="ComfyUI: Checking...", bg="#16213e", fg="#ff6b6b")
+        self.comfy_status2 = tk.Label(svc_frame, text="Image: Checking...", bg="#16213e", fg="#ff6b6b")
         self.comfy_status2.pack(side=tk.LEFT, padx=10)
-        tk.Button(svc_frame, text="Refresh", command=self.check_services, bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 9)).pack(side=tk.RIGHT, padx=5)
-        
-        # ===== 左右分栏 =====
+        tk.Button(svc_frame, text="Refresh", command=self.check_services,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 9)).pack(side=tk.RIGHT, padx=5)
+
         content_frame = tk.Frame(main_frame, bg="#1a1a2e")
         content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        # --- 左侧面板 ---
+
+        # Left panel
         left_panel = tk.Frame(content_frame, bg="#1a1a2e")
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        
-        # 角色设定
-        char_frame = tk.LabelFrame(left_panel, text="🎭 Character Setup", font=("Microsoft YaHei", 11, "bold"), bg="#1a1a2e", fg="#00d9ff", padx=10, pady=8)
+
+        # Character setup
+        char_frame = tk.LabelFrame(left_panel, text="🎭 Character Setup",
+                                    font=("Microsoft YaHei", 11, "bold"),
+                                    bg="#1a1a2e", fg="#00d9ff", padx=10, pady=8)
         char_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        tk.Label(char_frame, text="Name:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(anchor=tk.W)
+
+        tk.Label(char_frame, text="Name:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(anchor=tk.W)
         self.char_name_var = tk.StringVar(value="Ling")
-        tk.Entry(char_frame, textvariable=self.char_name_var, font=("Microsoft YaHei", 10), bg="#16213e", fg="#fff", insertbackground="#fff").pack(fill=tk.X, pady=(0, 5))
-        
-        tk.Label(char_frame, text="Appearance (face, hair, body, skin - fixed features):", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(anchor=tk.W)
-        self.char_desc_input = scrolledtext.ScrolledText(char_frame, height=4, font=("Microsoft YaHei", 10), wrap=tk.WORD, bg="#16213e", fg="#fff", insertbackground="#fff")
+        tk.Entry(char_frame, textvariable=self.char_name_var, font=("Microsoft YaHei", 10),
+                 bg="#16213e", fg="#fff", insertbackground="#fff").pack(fill=tk.X, pady=(0, 5))
+
+        tk.Label(char_frame, text="Appearance (face, hair, body, skin - fixed features):",
+                 bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(anchor=tk.W)
+        self.char_desc_input = scrolledtext.ScrolledText(
+            char_frame, height=4, font=("Microsoft YaHei", 10), wrap=tk.WORD,
+            bg="#16213e", fg="#fff", insertbackground="#fff")
         self.char_desc_input.pack(fill=tk.X, pady=5)
-        
+
         char_btn_frame = tk.Frame(char_frame, bg="#1a1a2e")
         char_btn_frame.pack(fill=tk.X, pady=5)
-        tk.Button(char_btn_frame, text="🎨 Generate Character Sheet", command=self.generate_character_sheet, bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT, padx=2)
-        tk.Button(char_btn_frame, text="📁 Load Reference Image", command=self.load_reference_image, bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
-        
-        # 分镜脚本
-        script_frame = tk.LabelFrame(left_panel, text="📝 Storyboard Script", font=("Microsoft YaHei", 11, "bold"), bg="#1a1a2e", fg="#00d9ff", padx=10, pady=8)
+        tk.Button(char_btn_frame, text="🎨 Generate Character Sheet",
+                  command=self.generate_character_sheet, bg="#0f3460", fg="#fff",
+                  font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT, padx=2)
+        tk.Button(char_btn_frame, text="📁 Load Reference Image",
+                  command=self.load_reference_image, bg="#0f3460", fg="#fff",
+                  font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=2)
+
+        # Storyboard script
+        script_frame = tk.LabelFrame(left_panel, text="📝 Storyboard Script",
+                                      font=("Microsoft YaHei", 11, "bold"),
+                                      bg="#1a1a2e", fg="#00d9ff", padx=10, pady=8)
         script_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        tk.Label(script_frame, text="One scene per line (action/clothing/expression/background):", bg="#1a1a2e", fg="#aaa", font=("Microsoft YaHei", 9)).pack(anchor=tk.W)
-        self.script_input = scrolledtext.ScrolledText(script_frame, height=6, font=("Microsoft YaHei", 10), wrap=tk.WORD, bg="#16213e", fg="#fff", insertbackground="#fff")
+
+        tk.Label(script_frame, text="One scene per line (action/clothing/expression/background):",
+                 bg="#1a1a2e", fg="#aaa", font=("Microsoft YaHei", 9)).pack(anchor=tk.W)
+        self.script_input = scrolledtext.ScrolledText(
+            script_frame, height=6, font=("Microsoft YaHei", 10), wrap=tk.WORD,
+            bg="#16213e", fg="#fff", insertbackground="#fff")
         self.script_input.pack(fill=tk.BOTH, expand=True, pady=5)
-        sample = """smiling under cherry blossom tree, wearing pink floral dress
+        self.script_input.insert(tk.END, """smiling under cherry blossom tree, wearing pink floral dress
 surprised looking out rainy window, wearing cozy sweater
 running through autumn forest, wearing brown leather jacket
-sitting at desk reading book, wearing glasses and school uniform"""
-        self.script_input.insert(tk.END, sample)
-        
-        # 生成参数
-        param_frame = tk.LabelFrame(left_panel, text="⚙️ Generation Settings", font=("Microsoft YaHei", 11, "bold"), bg="#1a1a2e", fg="#00d9ff", padx=10, pady=8)
+sitting at desk reading book, wearing glasses and school uniform""")
+
+        # Generation settings
+        param_frame = tk.LabelFrame(left_panel, text="⚙️ Generation Settings",
+                                     font=("Microsoft YaHei", 11, "bold"),
+                                     bg="#1a1a2e", fg="#00d9ff", padx=10, pady=8)
         param_frame.pack(fill=tk.X)
-        
+
         p1 = tk.Frame(param_frame, bg="#1a1a2e")
         p1.pack(fill=tk.X, pady=2)
-        tk.Label(p1, text="Size:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
-        c_default_res = "768" if GPU_VRAM_MB > 0 and GPU_VRAM_MB < 12000 else "1024"
-        self.c_width_var = tk.StringVar(value=c_default_res)
-        tk.Spinbox(p1, from_=256, to=2048, increment=64, textvariable=self.c_width_var, width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Label(p1, text="Size:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        self.c_width_var = tk.StringVar(value="1024")
+        tk.Spinbox(p1, from_=256, to=2048, increment=64, textvariable=self.c_width_var,
+                   width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
         tk.Label(p1, text="x", bg="#1a1a2e", fg="#fff").pack(side=tk.LEFT)
-        self.c_height_var = tk.StringVar(value=c_default_res)
-        tk.Spinbox(p1, from_=256, to=2048, increment=64, textvariable=self.c_height_var, width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
-        tk.Label(p1, text="  Steps:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20,0))
+        self.c_height_var = tk.StringVar(value="1024")
+        tk.Spinbox(p1, from_=256, to=2048, increment=64, textvariable=self.c_height_var,
+                   width=6, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Label(p1, text="  Steps:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
         self.c_steps_var = tk.StringVar(value="25")
-        tk.Spinbox(p1, from_=10, to=50, increment=5, textvariable=self.c_steps_var, width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
-        tk.Label(p1, text="  Model:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20,0))
-        c_model_choices = get_model_choices()
-        c_model_labels = [c[0] for c in c_model_choices]
-        self._c_model_map = {c[0]: c[1] for c in c_model_choices}
-        c_default_fname = suggest_model()
-        c_default_label = next((l for l, f in self._c_model_map.items() if f == c_default_fname), c_model_labels[0] if c_model_labels else "")
-        self.c_model_var = tk.StringVar(value=c_default_label)
-        c_model_combo = ttk.Combobox(p1, textvariable=self.c_model_var, values=c_model_labels, width=30, font=("Microsoft YaHei", 10))
-        c_model_combo.pack(side=tk.LEFT, padx=5)
-        
+        tk.Spinbox(p1, from_=10, to=50, increment=5, textvariable=self.c_steps_var,
+                   width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Label(p1, text="  Model:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.c_model_var = tk.StringVar(value="meinamix_v12Final.safetensors")
+        ttk.Combobox(p1, textvariable=self.c_model_var,
+                     values=["meinamix_v12Final.safetensors",
+                             "dreamshaper_8.safetensors",
+                             "ponyDiffusionV6XL_v6.safetensors"],
+                     width=22, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
         p2 = tk.Frame(param_frame, bg="#1a1a2e")
         p2.pack(fill=tk.X, pady=5)
-        tk.Label(p2, text="Consistency:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        tk.Label(p2, text="Consistency:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
         self.denoise_var = tk.DoubleVar(value=0.55)
-        tk.Scale(p2, from_=0.35, to=0.75, resolution=0.05, orient=tk.HORIZONTAL, variable=self.denoise_var, length=180, bg="#1a1a2e", fg="#fff", highlightthickness=0).pack(side=tk.LEFT, padx=5)
-        tk.Label(p2, text="(0.35=face almost identical, 0.55=balanced, 0.75=more creative)", bg="#1a1a2e", fg="#888", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT)
-        
+        tk.Scale(p2, from_=0.35, to=0.75, resolution=0.05, orient=tk.HORIZONTAL,
+                 variable=self.denoise_var, length=180, bg="#1a1a2e", fg="#fff",
+                 highlightthickness=0).pack(side=tk.LEFT, padx=5)
+        tk.Label(p2, text="(0.35=face almost identical, 0.55=balanced, 0.75=more creative)",
+                 bg="#1a1a2e", fg="#888", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT)
+
         p3 = tk.Frame(param_frame, bg="#1a1a2e")
         p3.pack(fill=tk.X, pady=2)
-        tk.Label(p3, text="Seed:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        tk.Label(p3, text="Seed:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
         self.seed_mode_var = tk.StringVar(value="fixed")
-        tk.Radiobutton(p3, text="Fixed (max consistency, recommended)", variable=self.seed_mode_var, value="fixed", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(p3, text="Series (varied poses, slight appearance drift)", variable=self.seed_mode_var, value="series", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p3, text="Fixed (max consistency)", variable=self.seed_mode_var,
+                       value="fixed", bg="#1a1a2e", fg="#fff", selectcolor="#16213e",
+                       font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p3, text="Series (varied poses)", variable=self.seed_mode_var,
+                       value="series", bg="#1a1a2e", fg="#fff", selectcolor="#16213e",
+                       font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
         self.base_seed_var = tk.StringVar(value="123456")
-        tk.Entry(p3, textvariable=self.base_seed_var, width=10, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
-        
-        # 模式选择
+        tk.Entry(p3, textvariable=self.base_seed_var, width=10,
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
         p4 = tk.Frame(param_frame, bg="#1a1a2e")
         p4.pack(fill=tk.X, pady=8)
-        tk.Label(p4, text="Mode:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT)
+        tk.Label(p4, text="Mode:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT)
         self.mode_var = tk.StringVar(value="ipadapter")
-        tk.Radiobutton(p4, text="🧠 IPAdapter (txt2img + face injection, BEST consistency ✨)", variable=self.mode_var, value="ipadapter", bg="#1a1a2e", fg="#00d9ff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(p4, text="🔒 Face Lock (img2img + reference, SAME character)", variable=self.mode_var, value="face_lock", bg="#1a1a2e", fg="#fff", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(p4, text="🎭 Action Free (txt2img, DIFFERENT character per scene)", variable=self.mode_var, value="action_free", bg="#1a1a2e", fg="#888", selectcolor="#16213e", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
-        
-        note = tk.Label(param_frame, text="Tip: IPAdapter is STRONGLY RECOMMENDED for story comics. Face Lock for backup. Action Free = no consistency.", bg="#1a1a2e", fg="#00d9ff", font=("Microsoft YaHei", 9))
-        note.pack(anchor=tk.W, pady=(5,0))
-        
-        # 风格预设
+        tk.Radiobutton(p4, text="🧠 IPAdapter (BEST consistency ✨)", variable=self.mode_var,
+                       value="ipadapter", bg="#1a1a2e", fg="#00d9ff", selectcolor="#16213e",
+                       font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p4, text="🔒 Face Lock (img2img)", variable=self.mode_var,
+                       value="face_lock", bg="#1a1a2e", fg="#fff", selectcolor="#16213e",
+                       font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(p4, text="🎭 Action Free (txt2img)", variable=self.mode_var,
+                       value="action_free", bg="#1a1a2e", fg="#888", selectcolor="#16213e",
+                       font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(param_frame,
+                 text="Tip: IPAdapter/Face Lock require ComfyUI. Cloud providers use Action Free only.",
+                 bg="#1a1a2e", fg="#00d9ff", font=("Microsoft YaHei", 9)).pack(anchor=tk.W, pady=(5, 0))
+
         p5 = tk.Frame(param_frame, bg="#1a1a2e")
         p5.pack(fill=tk.X, pady=8)
-        tk.Label(p5, text="Style Preset:", bg="#1a1a2e", fg="#fff", font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT)
+        tk.Label(p5, text="Style Preset:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT)
         self.style_preset_var = tk.StringVar(value="Default")
-        style_combo = ttk.Combobox(p5, textvariable=self.style_preset_var, values=["Default", "Soft Moe (pastel/soft)", "Dark Dramatic (dark/contrast)", "Watercolor (paint/wash)"], width=28, font=("Microsoft YaHei", 10))
-        style_combo.pack(side=tk.LEFT, padx=5)
-        
-        # --- 右侧面板 ---
+        ttk.Combobox(p5, textvariable=self.style_preset_var,
+                     values=["Default", "Soft Moe (pastel/soft)",
+                             "Dark Dramatic (dark/contrast)",
+                             "Watercolor (paint/wash)"],
+                     width=28, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
+        # Right panel
         right_panel = tk.Frame(content_frame, bg="#1a1a2e", width=320)
         right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         right_panel.pack_propagate(False)
-        
-        # 参考图预览
-        ref_frame = tk.LabelFrame(right_panel, text="👤 Reference Image", font=("Microsoft YaHei", 11, "bold"), bg="#1a1a2e", fg="#e94560", padx=5, pady=5, height=220)
+
+        ref_frame = tk.LabelFrame(right_panel, text="👤 Reference Image",
+                                   font=("Microsoft YaHei", 11, "bold"),
+                                   bg="#1a1a2e", fg="#e94560", padx=5, pady=5, height=220)
         ref_frame.pack(fill=tk.X, pady=(0, 10))
         ref_frame.pack_propagate(False)
-        self.ref_img_label = tk.Label(ref_frame, bg="#16213e", text="[No reference image]\nGenerate or load one first", fg="#666")
+        self.ref_img_label = tk.Label(ref_frame, bg="#16213e",
+                                       text="[No reference image]", fg="#666")
         self.ref_img_label.pack(fill=tk.BOTH, expand=True)
-        
-        # 批量生成按钮
-        self.comic_gen_btn = tk.Button(right_panel, text="🚀 GENERATE COMIC", command=self.generate_comic_batch, bg="#e94560", fg="#fff", font=("Microsoft YaHei", 14, "bold"), height=2)
+
+        self.comic_gen_btn = tk.Button(right_panel, text="🚀 GENERATE COMIC",
+                                        command=self.generate_comic_batch,
+                                        bg="#e94560", fg="#fff",
+                                        font=("Microsoft YaHei", 14, "bold"), height=2)
         self.comic_gen_btn.pack(fill=tk.X, pady=(0, 10))
-        
-        # 进度
-        self.comic_progress = ttk.Progressbar(right_panel, mode='determinate')
+
+        self.comic_progress = ttk.Progressbar(right_panel, mode="determinate")
         self.comic_progress.pack(fill=tk.X, pady=(0, 10))
-        self.comic_status = tk.Label(right_panel, text="Ready", bg="#1a1a2e", fg="#aaa", font=("Microsoft YaHei", 10))
+        self.comic_status = tk.Label(right_panel, text="Ready", bg="#1a1a2e", fg="#aaa",
+                                      font=("Microsoft YaHei", 10))
         self.comic_status.pack(anchor=tk.W, pady=(0, 5))
-        
-        # 缩略图预览区
-        thumb_frame = tk.LabelFrame(right_panel, text="Generated Panels", font=("Microsoft YaHei", 10, "bold"), bg="#1a1a2e", fg="#51cf66", padx=5, pady=5)
+
+        thumb_frame = tk.LabelFrame(right_panel, text="Generated Panels",
+                                     font=("Microsoft YaHei", 10, "bold"),
+                                     bg="#1a1a2e", fg="#51cf66", padx=5, pady=5)
         thumb_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         thumb_canvas_frame = tk.Frame(thumb_frame, bg="#16213e")
         thumb_canvas_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         self.thumb_canvas = tk.Canvas(thumb_canvas_frame, bg="#16213e", highlightthickness=0)
-        self.thumb_scrollbar = tk.Scrollbar(thumb_canvas_frame, orient="vertical", command=self.thumb_canvas.yview)
+        self.thumb_scrollbar = tk.Scrollbar(thumb_canvas_frame, orient="vertical",
+                                            command=self.thumb_canvas.yview)
         self.thumb_scrollable = tk.Frame(self.thumb_canvas, bg="#16213e")
-        
         self.thumb_scrollable.bind(
             "<Configure>",
-            lambda e: self.thumb_canvas.configure(scrollregion=self.thumb_canvas.bbox("all"))
-        )
+            lambda e: self.thumb_canvas.configure(
+                scrollregion=self.thumb_canvas.bbox("all")))
         self.thumb_canvas.create_window((0, 0), window=self.thumb_scrollable, anchor="nw")
         self.thumb_canvas.configure(yscrollcommand=self.thumb_scrollbar.set)
-        
         self.thumb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.thumb_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    
-    # ============ 提示词优化 ============
-    def optimize_prompt(self, chinese_prompt):
-        system_prompt = """You are an expert AI image generation prompt engineer. Your task is to translate and enhance Chinese image descriptions into high-quality English prompts for Stable Diffusion.
 
-Rules:
-1. Translate the user's Chinese description accurately
-2. Add quality boosters: masterpiece, best quality, highly detailed, professional lighting, 8k uhd
-3. Add style/context tags appropriate for the scene
-4. Output ONLY the final English prompt, nothing else
-5. Be descriptive and vivid - use comma-separated tags
-6. If content is artistic/educational/medical, describe professionally without censorship
+    # ═══════════════════════════════════════════════
+    #  Tab 3: 设置
+    # ═══════════════════════════════════════════════
 
-Output format (just the prompt text, no quotes, no explanations):"""
+    def build_settings_ui(self, parent):
+        main_frame = tk.Frame(parent, bg="#1a1a2e", padx=20, pady=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        full_prompt = f"{system_prompt}\n\nChinese description: {chinese_prompt}\n\nEnglish prompt:"
-        payload = {
-            "model": "wizardlm-uncensored",
-            "prompt": full_prompt,
-            "stream": False,
-            "options": {"temperature": 0.7, "num_predict": 200}
-        }
-        r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
-        r.raise_for_status()
-        data = r.json()
-        result = data.get('response', '').strip()
-        result = result.replace('"', '').replace("'", "")
-        result = result.replace('English prompt:', '').replace('Prompt:', '')
-        return result.strip()
+        tk.Label(main_frame, text="⚙️ Settings", font=("Microsoft YaHei", 20, "bold"),
+                 bg="#1a1a2e", fg="#e94560").pack(pady=(0, 20))
 
-    def optimize_comic_prompt(self, chinese_prompt, char_desc):
-        """漫画专用优化器：分层结构 = 角色 + 表情 + 动作 + 氛围 + 质感"""
-        system_prompt = """You are an expert AI image generation prompt engineer specializing in comic storyboards and cinematic storytelling.
+        # ── LLM Provider Selection ──
+        llm_frame = tk.LabelFrame(main_frame, text="LLM Provider (Prompt Optimization)",
+                                   font=("Microsoft YaHei", 12, "bold"),
+                                   bg="#1a1a2e", fg="#00d9ff", padx=15, pady=10)
+        llm_frame.pack(fill=tk.X, pady=(0, 15))
 
-Your task: Convert a Chinese scene description into a PRECISE, CINEMATIC English SD prompt.
+        self.llm_provider_var = tk.StringVar(value=self.config.get("llm_provider", "ollama"))
+        llm_sel = tk.Frame(llm_frame, bg="#1a1a2e")
+        llm_sel.pack(fill=tk.X, pady=5)
+        tk.Label(llm_sel, text="Provider:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10), width=10, anchor=tk.W).pack(side=tk.LEFT)
+        ttk.Combobox(llm_sel, textvariable=self.llm_provider_var,
+                     values=["ollama", "openai", "claude", "deepseek"],
+                     state="readonly", width=20, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Button(llm_sel, text="Apply", command=self._apply_llm_provider,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=10)
 
-CRITICAL RULES:
-1. OUTPUT ONLY the prompt text - no quotes, no explanations, no markdown
-2. STRUCTURE (in this exact order):
-   [Character appearance] + [Facial expression with weight] + [Dynamic action/pose with weight] + [Environment/atmosphere] + [Quality tags]
-3. Extract the EXACT emotion: smiling → (bright smile:1.3), surprised → (wide-eyed shocked expression:1.3), sad → (tears welling up, sorrowful eyes:1.2)
-4. Describe action SPECIFICALLY with motion: not "sitting" but "slumped against window sill, head tilted down, fingers tracing raindrops on glass"
-5. Add atmospheric details: rainy → "raindrops streaking down foggy glass, dim gray ambient light"; autumn forest → "golden leaves swirling in wind, dappled sunlight"
-6. Include cinematic framing cues: depth of field, foreground elements, lighting direction
-7. Use prompt weighting: (emotion:1.3), (action:1.2), (environment detail:1.1)
-8. NEVER omit hair color, eye color from char_desc - wrap them: (blue eyes:1.3), (long blue hair:1.3)
-9. Keep under 180 tokens
+        # Ollama settings
+        self.ollama_frame = tk.Frame(llm_frame, bg="#1a1a2e")
+        self.ollama_frame.pack(fill=tk.X, pady=5)
+        tk.Label(self.ollama_frame, text="URL:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 9), width=10, anchor=tk.W).pack(side=tk.LEFT)
+        self.ollama_url_var = tk.StringVar(value=self.config["ollama"]["base_url"])
+        tk.Entry(self.ollama_frame, textvariable=self.ollama_url_var, width=30,
+                 font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
+        tk.Label(self.ollama_frame, text="Model:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=(10, 0))
+        self.ollama_model_var = tk.StringVar(value=self.config["ollama"]["model"])
+        tk.Entry(self.ollama_frame, textvariable=self.ollama_model_var, width=20,
+                 font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
 
-Example: "惊讶地看着窗外下雨，穿着毛衣"
-Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-eyed shocked expression:1.3), (mouth slightly open:1.2), hands pressed against window glass, leaning forward, raindrops streaking down foggy window, dim gray ambient light, wet glass reflection, cozy oversized sweater, masterpiece, best quality, highly detailed, cinematic lighting, depth of field"""
+        # Cloud API settings
+        self._api_key_vars = {}
+        self._api_model_vars = {}
+        self._api_url_vars = {}
 
-        full_prompt = f"{system_prompt}\n\nCharacter: {char_desc}\nScene: {chinese_prompt}\n\nEnglish prompt:"
-        payload = {
-            "model": "wizardlm-uncensored",
-            "prompt": full_prompt,
-            "stream": False,
-            "options": {"temperature": 0.6, "num_predict": 280}
-        }
-        try:
-            r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            result = data.get('response', '').strip()
-            result = result.replace('"', '').replace("'", "")
-            result = result.replace('English prompt:', '').replace('Prompt:', '')
-            result = result.replace('solo, 1 person, ', '')
-            result = result.replace('solo', '').replace('1 person', '').replace('single character', '')
-            return result.strip()
-        except Exception as e:
-            return f"{char_desc}, {chinese_prompt}, masterpiece, best quality, highly detailed, 8k uhd"
-
-    def protect_character_colors(self, char_desc):
-        """给角色描述中的颜色词加权重保护，防止场景颜色污染"""
-        colors = ['black', 'brown', 'blonde', 'blond', 'golden', 'silver', 'white', 'red', 'blue', 'green', 'purple', 'pink', 'gray', 'grey', 'auburn', 'chestnut']
-        protected = char_desc
-        for color in colors:
-            pattern = r'\b(' + color + r')\b(?!\s*\:)'
-            protected = re.sub(pattern, r'(\1:1.3)', protected, flags=re.IGNORECASE)
-        protected = re.sub(r'\((\([^)]+\:1\.3\)\:1\.3)\)', r'\1', protected)
-        return protected
-
-    def enhance_atmosphere(self, scene_text):
-        """根据场景关键词自动追加氛围渲染词"""
-        scene_lower = scene_text.lower()
-        extras = []
-        if any(w in scene_lower for w in ['rain', 'rainy', '下雨', '雨']):
-            extras.append("raindrops streaking down surfaces, wet hair strands, humid atmosphere, water reflections")
-        if any(w in scene_lower for w in ['snow', 'snowy', '下雪', '雪']):
-            extras.append("snowflakes falling gently, breath visible in cold air, soft white blanket covering ground")
-        if any(w in scene_lower for w in ['night', 'dark', '晚上', '夜晚']):
-            extras.append("moonlight casting soft silver glow, deep shadows, stars faintly visible, cool blue ambient light")
-        if any(w in scene_lower for w in ['sunset', 'sunrise', 'golden hour', '黄昏', '日出']):
-            extras.append("warm golden hour light, long dramatic shadows, orange and pink sky gradient, rim lighting on hair")
-        if any(w in scene_lower for w in ['forest', 'woods', '森林', '树林']):
-            extras.append("dappled sunlight filtering through canopy, mossy textures, earthy scent visualized, natural depth")
-        if any(w in scene_lower for w in ['city', 'street', 'urban', '城市', '街道']):
-            extras.append("neon reflections on wet pavement, urban depth layers, distant city lights bokeh, modern energy")
-        if any(w in scene_lower for w in ['happy', 'joy', 'smile', 'laugh', '开心', '笑', '高兴']):
-            extras.append("warm inviting lighting, sparkling energy in air, bright optimistic color palette, uplifting atmosphere")
-        if any(w in scene_lower for w in ['sad', 'sorrow', 'cry', 'tear', '难过', '哭', '悲伤']):
-            extras.append("muted desaturated tones, soft diffused overcast light, solitary contemplative mood, gentle melancholy")
-        if any(w in scene_lower for w in ['surprised', 'shock', '惊讶', '吃惊', '震惊']):
-            extras.append("sudden sharp lighting contrast, motion blur suggestion, dynamic energy burst, caught-in-the-moment feeling")
-        if any(w in scene_lower for w in ['angry', 'furious', 'mad', '生气', '愤怒']):
-            extras.append("harsh dramatic shadows, intense contrast, tension in the air, stormy atmosphere visualized")
-        if any(w in scene_lower for w in ['scared', 'fear', 'afraid', '害怕', '恐惧']):
-            extras.append("dim uncertain lighting, looming shadows, claustrophobic framing, cold blue undertones")
-        if any(w in scene_lower for w in ['peaceful', 'calm', 'relax', '宁静', '平静', '放松']):
-            extras.append("soft even diffused lighting, harmonious color palette, gentle gradient background, serene stillness")
-        if any(w in scene_lower for w in ['bedroom', 'room', '室内', '房间', 'desk', '书房']):
-            extras.append("intimate indoor lighting, soft shadows from furniture, cozy enclosed feeling, warm artificial light sources")
-        if any(w in scene_lower for w in ['window', '窗户']):
-            extras.append("natural light streaming through glass, window frame creating natural vignette, indoor-outdoor light contrast")
-        if extras:
-            return ", " + ", ".join(extras)
-        return ""
-
-    def get_camera_variation(self, idx):
-        """电影级构图变化，增强剧情表现力"""
-        variations = [
-            "close-up portrait, shallow depth of field, face fills 60% of frame, soft rim light on hair",
-            "medium shot, character at golden ratio intersection, foreground element framing the scene, cinematic bokeh",
-            "over-the-shoulder shot, looking toward off-screen action, dramatic diagonal composition, leading lines",
-            "low angle heroic shot, looking up at character, imposing presence, dramatic sky/ceiling backdrop",
-            "Dutch angle, dynamic tilt, tension in composition, asymmetric framing, motion blur suggestion",
-            "extreme close-up on eyes/hands, emotional detail shot, macro texture, intimate perspective",
-            "wide environmental shot, character small in vast space, loneliness or freedom feeling, atmospheric perspective",
-            "through-frame shot, character viewed through doorframe/window/branches, voyeuristic intimacy, layered depth",
+        cloud_providers = [
+            ("openai", "OpenAI", "gpt-4o-mini", True),
+            ("claude", "Claude", "claude-sonnet-4-6", True),
+            ("deepseek", "DeepSeek", "deepseek-chat", True),
         ]
-        return variations[idx % len(variations)]
-    
-    # ============ ComfyUI 通用方法 ============
-    def queue_prompt(self, workflow):
-        p = {"prompt": workflow, "client_id": "ai_image_studio"}
-        try:
-            r = requests.post(f"{self.comfy_url}/prompt", json=p, timeout=30)
-            if r.status_code != 200:
-                try:
-                    err = r.json()
-                    err_msg = err.get('error', {}).get('message', '') or json.dumps(err)
-                except:
-                    err_msg = r.text[:500]
-                raise Exception(f"ComfyUI Error ({r.status_code}): {err_msg}")
-            return r.json()
-        except requests.exceptions.RequestException as e:
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    detail = e.response.json()
-                except:
-                    detail = e.response.text[:300]
-                raise Exception(f"ComfyUI Error: {detail}")
-            raise Exception(f"Cannot connect to ComfyUI: {e}")
-    
-    def get_image(self, filename, subfolder, folder_type):
-        data = {"filename": filename, "subfolder": subfolder, "type": folder_type}
-        r = requests.get(f"{self.comfy_url}/view", params=data)
-        return r.content
-    
-    def get_history(self, prompt_id):
-        try:
-            r = requests.get(f"{self.comfy_url}/history/{prompt_id}", timeout=10)
-            r.raise_for_status()
+
+        for name, label, default_model, show_url in cloud_providers:
+            cfg = self.config.get(name, {})
+            frm = tk.Frame(llm_frame, bg="#1a1a2e")
+            frm.pack(fill=tk.X, pady=3)
+            tk.Label(frm, text=f"{label}:", bg="#1a1a2e", fg="#fff",
+                     font=("Microsoft YaHei", 9), width=10, anchor=tk.W).pack(side=tk.LEFT)
+
+            kv = tk.StringVar(value=cfg.get("api_key", ""))
+            self._api_key_vars[name] = kv
+            tk.Entry(frm, textvariable=kv, width=35, show="*",
+                     font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
+
+            tk.Label(frm, text="Model:", bg="#1a1a2e", fg="#fff",
+                     font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=(10, 0))
+            mv = tk.StringVar(value=cfg.get("model", default_model))
+            self._api_model_vars[name] = mv
+            tk.Entry(frm, textvariable=mv, width=18,
+                     font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
+
+            if show_url:
+                tk.Label(frm, text="URL:", bg="#1a1a2e", fg="#fff",
+                         font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=(10, 0))
+                uv = tk.StringVar(value=cfg.get("base_url", ""))
+                self._api_url_vars[name] = uv
+                tk.Entry(frm, textvariable=uv, width=28,
+                         font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
+
+        # ── Image Provider Selection ──
+        img_frame = tk.LabelFrame(main_frame, text="Image Generation Provider",
+                                   font=("Microsoft YaHei", 12, "bold"),
+                                   bg="#1a1a2e", fg="#00d9ff", padx=15, pady=10)
+        img_frame.pack(fill=tk.X, pady=(0, 15))
+
+        self.img_provider_var = tk.StringVar(value=self.config.get("image_provider", "comfyui"))
+        img_sel = tk.Frame(img_frame, bg="#1a1a2e")
+        img_sel.pack(fill=tk.X, pady=5)
+        tk.Label(img_sel, text="Provider:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10), width=10, anchor=tk.W).pack(side=tk.LEFT)
+        ttk.Combobox(img_sel, textvariable=self.img_provider_var,
+                     values=["comfyui", "stability", "siliconflow"],
+                     state="readonly", width=20, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Button(img_sel, text="Apply", command=self._apply_img_provider,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=10)
+
+        # Stability AI
+        stab_frame = tk.Frame(img_frame, bg="#1a1a2e")
+        stab_frame.pack(fill=tk.X, pady=3)
+        tk.Label(stab_frame, text="Stability AI:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 9), width=10, anchor=tk.W).pack(side=tk.LEFT)
+        self.stability_key_var = tk.StringVar(value=self.config["stability"]["api_key"])
+        tk.Entry(stab_frame, textvariable=self.stability_key_var, width=35, show="*",
+                 font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
+
+        # SiliconFlow
+        sf_frame = tk.Frame(img_frame, bg="#1a1a2e")
+        sf_frame.pack(fill=tk.X, pady=3)
+        tk.Label(sf_frame, text="SiliconFlow:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 9), width=10, anchor=tk.W).pack(side=tk.LEFT)
+        self.sf_key_var = tk.StringVar(value=self.config["siliconflow"]["api_key"])
+        tk.Entry(sf_frame, textvariable=self.sf_key_var, width=35, show="*",
+                 font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
+        tk.Label(sf_frame, text="Model:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=(10, 0))
+        self.sf_model_var = tk.StringVar(value=self.config["siliconflow"]["model"])
+        tk.Entry(sf_frame, textvariable=self.sf_model_var, width=28,
+                 font=("Microsoft YaHei", 9), bg="#16213e", fg="#fff").pack(side=tk.LEFT, padx=5)
+
+        # ── Save / Reset ──
+        btn_frame = tk.Frame(main_frame, bg="#1a1a2e")
+        btn_frame.pack(fill=tk.X, pady=(20, 0))
+        tk.Button(btn_frame, text="💾 Save All Settings", command=self._save_all_settings,
+                  bg="#e94560", fg="#fff", font=("Microsoft YaHei", 12, "bold"),
+                  height=2).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="🔄 Reset to Defaults", command=self._reset_settings,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10),
+                  height=2).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="🔁 Reload Providers", command=self._reinit_providers,
+                  bg="#0f3460", fg="#fff", font=("Microsoft YaHei", 10),
+                  height=2).pack(side=tk.RIGHT, padx=5)
+
+        # Status
+        self.settings_status = tk.Label(main_frame, text="", bg="#1a1a2e", fg="#51cf66",
+                                         font=("Microsoft YaHei", 10))
+        self.settings_status.pack(pady=(15, 0))
+
+    def _apply_llm_provider(self):
+        self.config["llm_provider"] = self.llm_provider_var.get()
+        self._reinit_providers()
+        self.settings_status.config(text=f"LLM switched to: {self.llm.label}", fg="#51cf66")
+
+    def _apply_img_provider(self):
+        self.config["image_provider"] = self.img_provider_var.get()
+        self._reinit_providers()
+        self.settings_status.config(
+            text=f"Image provider switched to: {self.image_provider.label}", fg="#51cf66")
+
+    def _save_all_settings(self):
+        self.config["llm_provider"] = self.llm_provider_var.get()
+        self.config["image_provider"] = self.img_provider_var.get()
+
+        self.config["ollama"]["base_url"] = self.ollama_url_var.get()
+        self.config["ollama"]["model"] = self.ollama_model_var.get()
+
+        for name in ["openai", "claude", "deepseek"]:
+            if name in self._api_key_vars:
+                self.config[name]["api_key"] = self._api_key_vars[name].get()
+            if name in self._api_model_vars:
+                self.config[name]["model"] = self._api_model_vars[name].get()
+            if name in self._api_url_vars:
+                self.config[name]["base_url"] = self._api_url_vars[name].get()
+
+        self.config["stability"]["api_key"] = self.stability_key_var.get()
+        self.config["siliconflow"]["api_key"] = self.sf_key_var.get()
+        self.config["siliconflow"]["model"] = self.sf_model_var.get()
+
+        save_config(self.config)
+        self._reinit_providers()
+        self.settings_status.config(text="✅ Settings saved and providers reloaded!", fg="#51cf66")
+
+    def _reset_settings(self):
+        if messagebox.askyesno("Reset", "Reset all settings to defaults?"):
+            from config_manager import CONFIG_PATH as CP
+            self.config = DEFAULT_CONFIG.copy()
             try:
-                return r.json()
-            except Exception as e:
-                raise Exception(f"ComfyUI history returned invalid JSON: {e}")
-        except Exception as e:
-            raise Exception(f"Failed to get history: {e}")
-    
-    def upload_image_to_comfyui(self, image_path):
-        """上传图片到 ComfyUI 的 input 目录"""
-        url = f"{self.comfy_url}/upload/image"
-        with open(image_path, 'rb') as f:
-            files = {'image': (os.path.basename(image_path), f, 'image/png')}
-            data = {'type': 'input', 'overwrite': 'true'}
-            r = requests.post(url, files=files, data=data, timeout=30)
-        r.raise_for_status()
-        result = r.json()
-        return result.get('name', os.path.basename(image_path))
-    
-    def wait_for_image(self, prompt_id, timeout_sec=300):
-        """等待 ComfyUI 生成完成并返回图片数据 (lowvram模式下较慢)"""
-        for i in range(timeout_sec // 3):
-            time.sleep(3)
-            try:
-                history = self.get_history(prompt_id)
-                if prompt_id in history:
-                    outputs = history[prompt_id].get('outputs', {})
-                    for node_id, node_output in outputs.items():
-                        if 'images' in node_output:
-                            for img_info in node_output['images']:
-                                filename = img_info['filename']
-                                subfolder = img_info.get('subfolder', '')
-                                folder_type = img_info.get('type', 'output')
-                                img_data = self.get_image(filename, subfolder, folder_type)
-                                return img_data, filename
+                os.remove(CP)
             except Exception:
-                continue
-        return None, None
-    
-    def load_workflow(self, path):
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Workflow not found: {path}")
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    
-    # ============ 单图生成 ============
+                pass
+            self._reinit_providers()
+            self.notebook.forget(self.tab_settings)
+            self.tab_settings = tk.Frame(self.notebook, bg="#1a1a2e")
+            self.notebook.add(self.tab_settings, text="⚙️ 设置")
+            self.build_settings_ui(self.tab_settings)
+            self.settings_status = tk.Label(self.tab_settings, text="", bg="#1a1a2e", fg="#51cf66",
+                                             font=("Microsoft YaHei", 10))
+            self.settings_status.pack(pady=(15, 0))
+            self.settings_status.config(text="Settings reset to defaults", fg="#fcc419")
+
+    # ═══════════════════════════════════════════════
+    #  Single Image Generation
+    # ═══════════════════════════════════════════════
+
     def generate(self):
         chinese = self.prompt_input.get("1.0", tk.END).strip()
         if not chinese:
             messagebox.showwarning("Tip", "Please enter a Chinese prompt")
             return
-        if "offline" in self.ollama_status.cget("text"):
-            messagebox.showwarning("Tip", "Ollama is offline, please start it first")
+        if not self.llm or not self.llm.is_available():
+            messagebox.showwarning("Tip", "LLM provider is not available. Check settings.")
             return
-        if "offline" in self.comfy_status.cget("text"):
-            messagebox.showwarning("Tip", "ComfyUI is offline, please start it first")
+        if not self.image_provider or not self.image_provider.is_available():
+            messagebox.showwarning("Tip", "Image provider is not available. Check settings.")
             return
-        
+
         self.progress.start()
         self.status_var.set("Optimizing prompt...")
         self.root.update()
-        
+
         def run():
             try:
-                en_prompt = self.optimize_prompt(chinese)
+                en_prompt = self.llm.optimize_single(chinese)
                 self.en_prompt.delete("1.0", tk.END)
                 self.en_prompt.insert(tk.END, en_prompt)
                 self.status_var.set(f"Optimized: {en_prompt[:80]}...")
-                
-                workflow = self.load_workflow(WORKFLOW_TXT2IMG)
+
                 width = int(self.width_var.get())
                 height = int(self.height_var.get())
                 steps = int(self.steps_var.get())
-                model_name = self._model_map.get(self.model_var.get(), self.model_var.get())
-                
-                model_paths = [
-                    os.path.join(COMFYUI_BASE, "models", "checkpoints", model_name) if COMFYUI_BASE else "",
-                ]
-                if not any(os.path.exists(p) for p in model_paths):
-                    raise FileNotFoundError(f"Model not found: {model_name}")
-                
-                for node_id, node in workflow.items():
-                    if node.get('class_type') == 'CheckpointLoaderSimple':
-                        node['inputs']['ckpt_name'] = model_name
-                    elif node.get('class_type') == 'CLIPTextEncode':
-                        meta_title = node.get('_meta', {}).get('title', '')
-                        if 'Positive' in meta_title or node_id == '2':
-                            node['inputs']['text'] = en_prompt
-                    elif node.get('class_type') == 'EmptyLatentImage':
-                        node['inputs']['width'] = width
-                        node['inputs']['height'] = height
-                    elif node.get('class_type') == 'KSampler':
-                        node['inputs']['steps'] = steps
-                
-                self.status_var.set("Submitting to ComfyUI...")
-                result = self.queue_prompt(workflow)
-                if 'prompt_id' not in result:
-                    raise Exception(f"ComfyUI returned: {json.dumps(result, ensure_ascii=False)[:500]}")
-                
-                prompt_id = result['prompt_id']
+                model_name = self.model_var.get()
+
                 self.status_var.set("Generating image...")
-                img_data, filename = self.wait_for_image(prompt_id)
-                
-                if img_data:
-                    save_path = os.path.join(OUTPUT_DIR, filename)
-                    with open(save_path, 'wb') as f:
-                        f.write(img_data)
-                    self.show_image(img_data, save_path)
-                    self.status_var.set(f"Done! Saved: {save_path}")
-                else:
-                    self.status_var.set("Timeout, check ComfyUI status")
-                
-                self.progress.stop()
+                result = self.image_provider.generate(
+                    prompt=en_prompt,
+                    negative_prompt="blurry, low quality, distorted, bad anatomy, watermark",
+                    width=width, height=height, steps=steps,
+                    model_name=model_name,
+                    workflow="txt2img",
+                )
+
+                save_path = result.save_path or os.path.join(
+                    OUTPUT_DIR_DEFAULT, result.filename)
+                with open(save_path, "wb") as f:
+                    f.write(result.image_data)
+
+                self.show_image_in_label(result.image_data, self.img_label)
+                self.img_label.bind("<Button-1>", lambda e: os.startfile(save_path))
+                self.img_label.config(cursor="hand2")
+                self.status_var.set(f"Done! Saved: {save_path}")
+
             except Exception as e:
-                self.status_var.set(f"Error: {str(e)}")
-                self.progress.stop()
+                self.status_var.set(f"Error: {e}")
                 messagebox.showerror("Generation Failed", str(e))
-        
+            finally:
+                self.progress.stop()
+
         threading.Thread(target=run, daemon=True).start()
-    
-    def show_image(self, img_data, path):
-        try:
-            img = Image.open(io.BytesIO(img_data))
-            img.thumbnail((450, 450), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            self.img_label.config(image=photo, text="")
-            self.img_label.image = photo
-            def open_image(event):
-                os.startfile(path)
-            self.img_label.bind("<Button-1>", open_image)
-            self.img_label.config(cursor="hand2")
-        except Exception as e:
-            self.img_label.config(text=f"[Image display failed: {e}]")
-    
-    # ============ 漫画工作室 ============
+
+    # ═══════════════════════════════════════════════
+    #  Comic Studio
+    # ═══════════════════════════════════════════════
+
     def load_reference_image(self):
-        """从文件选择对话框加载参考图"""
         path = filedialog.askopenfilename(
             title="Select Reference Image",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp"), ("All files", "*.*")]
-        )
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp"), ("All files", "*.*")])
         if path:
             self.set_reference_image(path)
-    
+
     def set_reference_image(self, path):
-        """设置参考图并显示预览"""
         self.reference_image_path = path
         try:
             img = Image.open(path)
@@ -863,355 +822,279 @@ Output: young girl, (long blue hair:1.3), (blue eyes:1.3), wearing hanfu, (wide-
             self.comic_status.config(text=f"Reference: {os.path.basename(path)}", fg="#51cf66")
         except Exception as e:
             self.comic_status.config(text=f"Failed to load: {e}", fg="#ff6b6b")
-    
+
     def generate_character_sheet(self):
-        """生成角色设定图（正面站立，中性表情）"""
-        if "offline" in self.comfy_status2.cget("text"):
-            messagebox.showwarning("Tip", "ComfyUI is offline, please start it first")
+        if not self.image_provider or not self.image_provider.is_available():
+            messagebox.showwarning("Tip", "Image provider is not available")
             return
-        if "offline" in self.ollama_status2.cget("text"):
-            messagebox.showwarning("Tip", "Ollama is offline, please start it first")
+        if not self.llm or not self.llm.is_available():
+            messagebox.showwarning("Tip", "LLM provider is not available")
             return
-        
+
         char_name = self.char_name_var.get().strip()
         char_desc = self.char_desc_input.get("1.0", tk.END).strip()
         if not char_desc:
             messagebox.showwarning("Tip", "Please enter character appearance description")
             return
-        
+
         self.comic_gen_btn.config(state=tk.DISABLED)
         self.comic_status.config(text="Generating character sheet...", fg="#e94560")
         self.root.update()
-        
+
         def run():
             try:
-                # 构建角色设定图的提示词
-                sheet_prompt = f"{char_desc}, standing pose, front view, neutral expression, full body, simple clean background, character design reference sheet, clear face details, masterpiece, best quality, highly detailed, professional lighting, 8k uhd"
-                
-                # 用 Ollama 优化
-                self.comic_status.config(text="Optimizing prompt...")
-                en_prompt = self.optimize_prompt(sheet_prompt)
-                
-                # 加载 txt2img workflow
-                workflow = self.load_workflow(WORKFLOW_TXT2IMG)
+                sheet_prompt = (
+                    f"{char_desc}, standing pose, front view, neutral expression, "
+                    f"full body, simple clean background, character design reference sheet, "
+                    f"clear face details, masterpiece, best quality, highly detailed, "
+                    f"professional lighting, 8k uhd"
+                )
+                en_prompt = self.llm.optimize_single(sheet_prompt)
+
                 width = int(self.c_width_var.get())
                 height = int(self.c_height_var.get())
                 steps = int(self.c_steps_var.get())
-                model_name = self._c_model_map.get(self.c_model_var.get(), self.c_model_var.get())
-                
-                for node_id, node in workflow.items():
-                    if node.get('class_type') == 'CheckpointLoaderSimple':
-                        node['inputs']['ckpt_name'] = model_name
-                    elif node.get('class_type') == 'CLIPTextEncode':
-                        meta_title = node.get('_meta', {}).get('title', '')
-                        if 'Positive' in meta_title or node_id == '2':
-                            node['inputs']['text'] = en_prompt
-                    elif node.get('class_type') == 'EmptyLatentImage':
-                        node['inputs']['width'] = width
-                        node['inputs']['height'] = height
-                    elif node.get('class_type') == 'KSampler':
-                        node['inputs']['steps'] = steps
-                        node['inputs']['control_after_generate'] = "fixed"
-                        node['inputs']['seed'] = int(self.base_seed_var.get())
-                
-                self.comic_status.config(text="Submitting to ComfyUI...")
-                result = self.queue_prompt(workflow)
-                prompt_id = result['prompt_id']
-                
-                self.comic_status.config(text="Generating character sheet...")
-                img_data, filename = self.wait_for_image(prompt_id)
-                
-                if img_data:
-                    # 保存到 output 目录
-                    save_path = os.path.join(OUTPUT_DIR, f"{char_name}_reference_{filename}")
-                    with open(save_path, 'wb') as f:
-                        f.write(img_data)
-                    
-                    # 同时保存到 ComfyUI input 目录作为参考
-                    ref_path = os.path.join(COMFYUI_INPUT_DIR, "reference.png")
-                    with open(ref_path, 'wb') as f:
-                        f.write(img_data)
-                    
-                    self.set_reference_image(save_path)
-                    self.comic_status.config(text=f"Character sheet saved: {save_path}", fg="#51cf66")
-                else:
-                    self.comic_status.config(text="Timeout", fg="#ff6b6b")
-                
+                model_name = self.c_model_var.get()
+                seed = int(self.base_seed_var.get())
+
+                result = self.image_provider.generate(
+                    prompt=en_prompt,
+                    negative_prompt="blurry, low quality, distorted, bad anatomy",
+                    width=width, height=height, steps=steps,
+                    seed=seed, model_name=model_name, workflow="txt2img",
+                )
+
+                save_path = result.save_path or os.path.join(
+                    OUTPUT_DIR_DEFAULT, f"{char_name}_reference_{result.filename}")
+                with open(save_path, "wb") as f:
+                    f.write(result.image_data)
+
+                ref_path = os.path.join(COMFYUI_INPUT_DIR, "reference.png")
+                try:
+                    with open(ref_path, "wb") as f:
+                        f.write(result.image_data)
+                except Exception:
+                    pass
+
+                self.set_reference_image(save_path)
+                self.comic_status.config(text=f"Character sheet saved: {save_path}", fg="#51cf66")
+
             except Exception as e:
-                self.comic_status.config(text=f"Error: {str(e)}", fg="#ff6b6b")
+                self.comic_status.config(text=f"Error: {e}", fg="#ff6b6b")
                 messagebox.showerror("Character Sheet Failed", str(e))
             finally:
                 self.comic_gen_btn.config(state=tk.NORMAL)
-        
+
         threading.Thread(target=run, daemon=True).start()
-    
+
     def generate_comic_batch(self):
-        """批量生成漫画分镜"""
         if self.comic_generating:
-            messagebox.showwarning("Tip", "Generation in progress, please wait")
+            messagebox.showwarning("Tip", "Generation in progress")
             return
-        
-        # 检查脚本
+
         script_text = self.script_input.get("1.0", tk.END).strip()
         if not script_text:
             messagebox.showwarning("Tip", "Please enter storyboard script")
             return
-        
-        scenes = [line.strip() for line in script_text.split('\n') if line.strip()]
+
+        scenes = [line.strip() for line in script_text.split("\n") if line.strip()]
         if not scenes:
             messagebox.showwarning("Tip", "No valid scenes found")
             return
-        
-        if "offline" in self.comfy_status2.cget("text"):
-            messagebox.showwarning("Tip", "ComfyUI is offline, please start it first")
+
+        if not self.image_provider or not self.image_provider.is_available():
+            messagebox.showwarning("Tip", "Image provider is not available")
             return
-        
+
         mode = self.mode_var.get()
-        use_reference = (mode == "face_lock")
         use_ipadapter = (mode == "ipadapter")
-        
-        # Face Lock / IPAdapter 都需要参考图
+        use_reference = (mode == "face_lock")
+        is_cloud = self.config["image_provider"] != "comfyui"
+
+        if is_cloud and (use_ipadapter or use_reference):
+            messagebox.showwarning(
+                "Cloud Mode",
+                "IPAdapter and Face Lock require ComfyUI (local).\n"
+                "Switching to Action Free mode for cloud generation.")
+            use_ipadapter = False
+            use_reference = False
+
         if use_reference or use_ipadapter:
             if not self.reference_image_path or not os.path.exists(self.reference_image_path):
                 auto_ref = os.path.join(COMFYUI_INPUT_DIR, "reference.png")
                 if os.path.exists(auto_ref):
                     self.reference_image_path = auto_ref
                 else:
-                    # 自动先生成参考图
-                    self.comic_status.config(text="Auto-generating character sheet first...", fg="#e94560")
-                    self.root.update()
-                    try:
-                        self.generate_character_sheet()
-                        # 等待参考图生成完成
-                        auto_ref = os.path.join(COMFYUI_INPUT_DIR, "reference.png")
-                        if os.path.exists(auto_ref):
-                            self.reference_image_path = auto_ref
-                        else:
-                            messagebox.showwarning("Tip", "Character sheet generation failed. Please generate one manually first.")
-                            return
-                    except Exception as e:
-                        messagebox.showwarning("Tip", f"Auto character sheet failed: {e}\nPlease generate one manually first.")
-                        return
-        
+                    messagebox.showwarning(
+                        "Tip", "No reference image. Generate a character sheet first.")
+                    return
+
         char_desc = self.char_desc_input.get("1.0", tk.END).strip()
         char_name = self.char_name_var.get().strip()
-        
+        llm_ok = self.llm and self.llm.is_available()
+
         self.comic_generating = True
         self.comic_gen_btn.config(state=tk.DISABLED, text="Generating...")
-        self.comic_progress['maximum'] = len(scenes)
-        self.comic_progress['value'] = 0
-        
-        mode_text = {"ipadapter": "IPAdapter", "face_lock": "Face Lock", "action_free": "Action Free"}.get(mode, mode)
-        self.comic_status.config(text=f"Mode: {mode_text} | Preparing {len(scenes)} panels...", fg="#e94560")
-        
-        # 清空旧缩略图
+        self.comic_progress["maximum"] = len(scenes)
+        self.comic_progress["value"] = 0
+
+        mode_text = "IPAdapter" if use_ipadapter else ("Face Lock" if use_reference else "Action Free")
+        self.comic_status.config(
+            text=f"Mode: {mode_text} | Preparing {len(scenes)} panels...", fg="#e94560")
+
         for widget in self.thumb_scrollable.winfo_children():
             widget.destroy()
         self.thumbnails.clear()
-        
+
         def run():
             try:
                 width = int(self.c_width_var.get())
                 height = int(self.c_height_var.get())
                 steps = int(self.c_steps_var.get())
-                model_name = self._c_model_map.get(self.c_model_var.get(), self.c_model_var.get())
+                model_name = self.c_model_var.get()
                 denoise = float(self.denoise_var.get())
                 seed_mode = self.seed_mode_var.get()
                 base_seed = int(self.base_seed_var.get())
-                
-                # Face Lock / IPAdapter 模式：上传参考图
+
                 ref_name = None
-                if use_reference or use_ipadapter:
-                    self.root.after(0, lambda: self.comic_status.config(
-                        text=f"Mode: {mode_text} | Uploading reference...", fg="#e94560"))
-                    ref_name = self.upload_image_to_comfyui(self.reference_image_path)
-                
+                if (use_reference or use_ipadapter) and not is_cloud:
+                    if hasattr(self.image_provider, "upload_image"):
+                        ref_name = self.image_provider.upload_image(self.reference_image_path)
+
                 generated_files = []
-                
+
                 for idx, scene in enumerate(scenes):
-                    self.root.after(0, lambda i=idx+1, total=len(scenes): 
-                        self.comic_status.config(text=f"Mode: {mode_text} | Panel {i}/{total}..."))
-                    
-                    # ===== 风格注入 =====
+                    self.comic_status.config(
+                        text=f"Mode: {mode_text} | Panel {idx + 1}/{len(scenes)}...")
+                    self.root.update()
+
                     style = self.style_preset_var.get()
                     style_pos = ""
                     style_neg_add = ""
                     if style == "Soft Moe (pastel/soft)":
-                        style_pos = "meinamix, pastel colors, soft lighting, muted tones, low contrast, kawaii, moe, gentle shading, fluffy atmosphere, dreamy, airy, soft focus, warm ambient light, delicate details, beautiful detailed eyes, detailed face, anime style, "
-                        style_neg_add = ", harsh shadows, high contrast, dramatic lighting, sharp edges, dark colors, gritty, cinematic, heavy shadows, realistic, 3d, western, ugly, bad anatomy"
+                        style_pos = (
+                            "meinamix, pastel colors, soft lighting, muted tones, "
+                            "low contrast, kawaii, moe, gentle shading, fluffy atmosphere, "
+                            "dreamy, airy, soft focus, warm ambient light, delicate details, "
+                            "beautiful detailed eyes, detailed face, anime style, ")
+                        style_neg_add = (
+                            ", harsh shadows, high contrast, dramatic lighting, "
+                            "sharp edges, dark colors, gritty, cinematic, heavy shadows, "
+                            "realistic, 3d, western, ugly, bad anatomy")
                     elif style == "Dark Dramatic (dark/contrast)":
-                        style_pos = "dark atmosphere, dramatic lighting, high contrast, deep shadows, cinematic, moody, intense colors, "
+                        style_pos = (
+                            "dark atmosphere, dramatic lighting, high contrast, "
+                            "deep shadows, cinematic, moody, intense colors, ")
                         style_neg_add = ", pastel, soft lighting, low contrast, fluffy, cute, bright colors"
                     elif style == "Watercolor (paint/wash)":
-                        style_pos = "watercolor painting, soft wash, bleeding colors, painterly, artistic, traditional media, paper texture, loose brushwork, "
+                        style_pos = (
+                            "watercolor painting, soft wash, bleeding colors, painterly, "
+                            "artistic, traditional media, paper texture, loose brushwork, ")
                         style_neg_add = ", photorealistic, 3d render, sharp edges, digital art, clean lines"
-                    
-                    # ===== 构建提示词 =====
-                    # 构图变化
+
                     camera_var = self.get_camera_variation(idx)
-                    # 颜色保护
                     protected_char = self.protect_character_colors(char_desc)
-                    # 氛围增强
-                    atmosphere = self.enhance_atmosphere(scene)
-                    
-                    # 基础提示词
-                    full_prompt = f"{style_pos}(solo:1.4), (1 person:1.3), {protected_char}, {scene}, {camera_var}{atmosphere}, masterpiece, best quality, highly detailed, professional lighting, cinematic composition, 8k uhd"
-                    
-                    # 优化提示词（漫画专用优化器，每帧都优化）
-                    if "offline" not in self.ollama_status2.cget("text"):
+
+                    en_prompt = (
+                        f"{style_pos}(solo:1.4), (1 person:1.3), {protected_char}, "
+                        f"{scene}, {camera_var}, masterpiece, best quality, highly detailed, "
+                        f"professional lighting, 8k uhd"
+                    )
+
+                    if llm_ok:
                         try:
-                            en_prompt = self.optimize_comic_prompt(scene, protected_char)
+                            en_prompt = self.llm.optimize_comic(scene, protected_char)
                             camera_var = self.get_camera_variation(idx)
-                            if "(solo:" not in en_prompt.lower() and "(1 person:" not in en_prompt.lower() and "solo" not in en_prompt.lower():
+                            if ("(solo:" not in en_prompt.lower()
+                                    and "(1 person:" not in en_prompt.lower()
+                                    and "solo" not in en_prompt.lower()):
                                 en_prompt = f"(solo:1.4), (1 person:1.3), {en_prompt}, {camera_var}"
                             else:
                                 if camera_var not in en_prompt:
                                     en_prompt = f"{en_prompt}, {camera_var}"
-                        except Exception as e:
-                            en_prompt = full_prompt
+                        except Exception:
+                            pass
+
+                    current_seed = base_seed if seed_mode == "fixed" else base_seed + idx
+
+                    neg = (
+                        "blurry, low quality, distorted, bad anatomy, watermark, "
+                        "mutated face, wrong face, different person, extra limbs, "
+                        "multiple characters, group, crowd, extra person, duplicate, "
+                        "wrong hair color, wrong eye color, mismatched colors")
+                    if use_reference:
+                        neg += (", same pose, identical pose, static posture, unchanged stance")
+                    neg += style_neg_add
+
+                    if use_ipadapter and not is_cloud:
+                        result = self.image_provider.generate(
+                            prompt=en_prompt, negative_prompt=neg,
+                            width=width, height=height, steps=steps,
+                            seed=current_seed, model_name=model_name,
+                            workflow="ipadapter", ref_image_name=ref_name,
+                        )
+                    elif use_reference and not is_cloud:
+                        result = self.image_provider.generate(
+                            prompt=en_prompt, negative_prompt=neg,
+                            width=width, height=height, steps=steps,
+                            seed=current_seed, model_name=model_name,
+                            workflow="img2img", ref_image_name=ref_name,
+                            denoise=denoise, use_img2img=True,
+                        )
                     else:
-                        en_prompt = full_prompt
-                    
-                    # 计算 seed
-                    if seed_mode == "fixed":
-                        current_seed = base_seed
-                    else:
-                        current_seed = base_seed + idx
-                    
-                    # ===== 选择 Workflow =====
-                    if use_ipadapter:
-                        # IPAdapter: txt2img + face injection
-                        workflow = self.load_workflow(WORKFLOW_IPADAPTER)
-                        
-                        for node_id, node in workflow.items():
-                            if node.get('class_type') == 'CheckpointLoaderSimple':
-                                node['inputs']['ckpt_name'] = model_name
-                            elif node.get('class_type') == 'CLIPTextEncode':
-                                meta_title = node.get('_meta', {}).get('title', '')
-                                if 'Positive' in meta_title or node_id == '6':
-                                    node['inputs']['text'] = en_prompt
-                                elif 'Negative' in meta_title or node_id == '7':
-                                    neg = node['inputs'].get('text', '')
-                                    if 'mutated face' not in neg:
-                                        node['inputs']['text'] = neg + ", (mutated face:1.3), (wrong face:1.3), (different person:1.4), (extra limbs:1.3), (2 people:1.5), (multiple characters:1.5), (group:1.5), (crowd:1.5), (twin:1.4), (extra person:1.5), (duplicate:1.4), (wrong hair color:1.3), (wrong eye color:1.3), (mismatched colors:1.2)" + style_neg_add
-                            elif node.get('class_type') == 'LoadImage':
-                                node['inputs']['image'] = ref_name
-                            elif node.get('class_type') == 'EmptyLatentImage':
-                                node['inputs']['width'] = width
-                                node['inputs']['height'] = height
-                            elif node.get('class_type') == 'KSampler':
-                                node['inputs']['steps'] = steps
-                                node['inputs']['seed'] = current_seed
-                                node['inputs']['control_after_generate'] = "fixed"
-                    elif use_reference:
-                        # Face Lock: img2img
-                        workflow = self.load_workflow(WORKFLOW_IMG2IMG)
-                        
-                        for node_id, node in workflow.items():
-                            if node.get('class_type') == 'CheckpointLoaderSimple':
-                                node['inputs']['ckpt_name'] = model_name
-                            elif node.get('class_type') == 'CLIPTextEncode':
-                                meta_title = node.get('_meta', {}).get('title', '')
-                                if 'Positive' in meta_title or node_id == '2':
-                                    node['inputs']['text'] = en_prompt
-                                elif 'Negative' in meta_title or node_id == '3':
-                                    neg = node['inputs'].get('text', '')
-                                    if 'same pose' not in neg:
-                                        node['inputs']['text'] = neg + ", (same pose:1.3), (identical pose:1.3), (static posture:1.3), (unchanged stance:1.3), (duplicate:1.4), (2 people:1.5), (multiple characters:1.5), (group:1.5), (crowd:1.5), (twin:1.4), (extra person:1.5), (wrong hair color:1.3), (wrong eye color:1.3), (mismatched colors:1.2)" + style_neg_add
-                            elif node.get('class_type') == 'LoadImage':
-                                node['inputs']['image'] = ref_name
-                            elif node.get('class_type') == 'EmptyLatentImage':
-                                node['inputs']['width'] = width
-                                node['inputs']['height'] = height
-                            elif node.get('class_type') == 'KSampler':
-                                node['inputs']['steps'] = steps
-                                node['inputs']['denoise'] = denoise
-                                node['inputs']['seed'] = current_seed
-                                node['inputs']['control_after_generate'] = "fixed"
-                    else:
-                        # Action Free: txt2img + fixed seed
-                        workflow = self.load_workflow(WORKFLOW_TXT2IMG)
-                        
-                        for node_id, node in workflow.items():
-                            if node.get('class_type') == 'CheckpointLoaderSimple':
-                                node['inputs']['ckpt_name'] = model_name
-                            elif node.get('class_type') == 'CLIPTextEncode':
-                                meta_title = node.get('_meta', {}).get('title', '')
-                                if 'Positive' in meta_title or node_id == '2':
-                                    node['inputs']['text'] = en_prompt
-                                elif 'Negative' in meta_title or node_id == '3':
-                                    neg = node['inputs'].get('text', '')
-                                    if 'mutated face' not in neg:
-                                        node['inputs']['text'] = neg + ", (mutated face:1.3), (wrong face:1.3), (different person:1.4), (extra limbs:1.3), (2 people:1.5), (multiple characters:1.5), (group:1.5), (crowd:1.5), (twin:1.4), (extra person:1.5), (duplicate:1.4), (wrong hair color:1.3), (wrong eye color:1.3), (mismatched colors:1.2)" + style_neg_add
-                            elif node.get('class_type') == 'EmptyLatentImage':
-                                node['inputs']['width'] = width
-                                node['inputs']['height'] = height
-                            elif node.get('class_type') == 'KSampler':
-                                node['inputs']['steps'] = steps
-                                node['inputs']['seed'] = current_seed
-                                node['inputs']['control_after_generate'] = "fixed"
-                    
-                    # 提交生成
-                    result = self.queue_prompt(workflow)
-                    prompt_id = result['prompt_id']
-                    
-                    # 等待完成
-                    img_data, filename = self.wait_for_image(prompt_id, timeout_sec=180)
-                    
-                    if img_data:
-                        panel_name = f"{char_name}_panel_{idx+1:03d}_{filename}"
-                        save_path = os.path.join(OUTPUT_DIR, panel_name)
-                        with open(save_path, 'wb') as f:
-                            f.write(img_data)
-                        generated_files.append(save_path)
-                        self.root.after(0, lambda p=save_path, n=idx+1: self.add_thumbnail(p, n))
-                    else:
-                        self.root.after(0, lambda n=idx+1: self.comic_status.config(
-                            text=f"Panel {n} timeout", fg="#ff6b6b"))
-                    
-                    self.root.after(0, lambda v=idx+1: self.comic_progress.config(value=v))
-                
-                self.root.after(0, lambda: self.comic_status.config(
-                    text=f"Done! {len(generated_files)} panels | Mode: {mode_text} | Saved to {OUTPUT_DIR}", fg="#51cf66"))
-                
+                        result = self.image_provider.generate(
+                            prompt=en_prompt, negative_prompt=neg,
+                            width=width, height=height, steps=steps,
+                            seed=current_seed, model_name=model_name,
+                            workflow="txt2img",
+                        )
+
+                    panel_name = f"{char_name}_panel_{idx + 1:03d}_{result.filename}"
+                    save_path = result.save_path or os.path.join(OUTPUT_DIR_DEFAULT, panel_name)
+                    with open(save_path, "wb") as f:
+                        f.write(result.image_data)
+                    generated_files.append(save_path)
+
+                    self.root.after(0, lambda p=save_path, n=idx + 1: self.add_thumbnail(p, n))
+                    self.root.after(0, lambda v=idx + 1: self.comic_progress.config(value=v))
+
+                self.comic_status.config(
+                    text=f"Done! {len(generated_files)} panels | Mode: {mode_text}",
+                    fg="#51cf66")
+
             except Exception as e:
-                self.root.after(0, lambda: self.comic_status.config(text=f"Error: {str(e)}", fg="#ff6b6b"))
-                self.root.after(0, lambda: messagebox.showerror("Comic Generation Failed", str(e)))
+                self.comic_status.config(text=f"Error: {e}", fg="#ff6b6b")
+                messagebox.showerror("Comic Generation Failed", str(e))
             finally:
                 self.comic_generating = False
-                self.root.after(0, lambda: self.comic_gen_btn.config(
-                    state=tk.NORMAL, text="🚀 GENERATE COMIC"))
-        
-        threading.Thread(target=run, daemon=True).start()
-    
+                self.comic_gen_btn.config(state=tk.NORMAL, text="🚀 GENERATE COMIC")
+
     def add_thumbnail(self, img_path, panel_num):
-        """添加缩略图到预览区"""
         try:
             img = Image.open(img_path)
             img.thumbnail((130, 130), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
-            
+
             frame = tk.Frame(self.thumb_scrollable, bg="#16213e", bd=2, relief=tk.RIDGE)
             frame.pack(fill=tk.X, padx=5, pady=5)
-            
+
             inner = tk.Frame(frame, bg="#16213e")
             inner.pack(fill=tk.X, padx=3, pady=3)
-            
+
             lbl = tk.Label(inner, image=photo, bg="#16213e")
             lbl.image = photo
             lbl.pack(side=tk.LEFT)
-            
-            txt = tk.Label(inner, text=f"#{panel_num}", bg="#16213e", fg="#fff", font=("Microsoft YaHei", 9))
-            txt.pack(side=tk.LEFT, padx=8, pady=5)
-            
+
+            tk.Label(inner, text=f"#{panel_num}", bg="#16213e", fg="#fff",
+                     font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=8, pady=5)
+
             def open_img(event, p=img_path):
                 os.startfile(p)
+
             lbl.bind("<Button-1>", open_img)
             lbl.config(cursor="hand2")
-            
+
             self.thumbnails.append((frame, photo))
-            
-            # 滚动到新图
             self.thumb_canvas.update_idletasks()
             self.thumb_canvas.yview_moveto(1.0)
         except Exception as e:
@@ -1224,9 +1107,9 @@ def main():
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pillow", "requests"])
         from PIL import Image, ImageTk
-    
+
     root = tk.Tk()
-    app = AIImageStudio(root)
+    AIImageStudio(root)
     root.mainloop()
 
 
