@@ -12,6 +12,7 @@ import re
 
 from config_manager import load_config, save_config, DEFAULT_CONFIG
 from providers import LLM_PROVIDERS, IMAGE_PROVIDERS, WanVideoProvider
+from resource_limiter import engage_limits, restore_limits
 
 # ── Paths ──────────────────────────────────────────
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -781,6 +782,7 @@ sitting at desk reading book, wearing glasses and school uniform""")
         self.root.update()
 
         def run():
+            freed = engage_limits()
             try:
                 en_prompt = self.llm.optimize_single(chinese)
                 self.en_prompt.delete("1.0", tk.END)
@@ -815,6 +817,7 @@ sitting at desk reading book, wearing glasses and school uniform""")
                 self.status_var.set(f"Error: {e}")
                 messagebox.showerror("Generation Failed", str(e))
             finally:
+                restore_limits()
                 self.progress.stop()
 
         threading.Thread(target=run, daemon=True).start()
@@ -966,6 +969,7 @@ sitting at desk reading book, wearing glasses and school uniform""")
         self.thumbnails.clear()
 
         def run():
+            engage_limits()
             try:
                 width = int(self.c_width_var.get())
                 height = int(self.c_height_var.get())
@@ -1085,6 +1089,7 @@ sitting at desk reading book, wearing glasses and school uniform""")
                 self.comic_status.config(text=f"Error: {e}", fg="#ff6b6b")
                 messagebox.showerror("Comic Generation Failed", str(e))
             finally:
+                restore_limits()
                 self.comic_generating = False
                 self.comic_gen_btn.config(state=tk.NORMAL, text="🚀 GENERATE COMIC")
 
@@ -1266,6 +1271,7 @@ sitting at desk reading book, wearing glasses and school uniform""")
         self.root.update()
 
         def run():
+            freed = engage_limits()
             try:
                 # Video-specific prompt optimization
                 video_system = f"""You are an expert AI video generation prompt engineer. Convert Chinese to a detailed English video prompt.
@@ -1333,6 +1339,7 @@ English video prompt:"""
                 self.status_var.set(f"Video error: {e}")
                 messagebox.showerror("Video Generation Failed", str(e))
             finally:
+                restore_limits()
                 self.video_progress.stop()
 
         threading.Thread(target=run, daemon=True).start()
