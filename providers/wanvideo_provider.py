@@ -60,16 +60,40 @@ class WanVideoProvider(ImageProvider):
         cfg = kwargs.get("cfg", 5.0)
         shift = kwargs.get("shift", 5.0)
         frame_rate = kwargs.get("frame_rate", 16)
+        use_14b = kwargs.get("use_14b", False)
 
-        # Workflow is now API format: dict keyed by node ID string
+        # Model selection: 14B full quality vs 1.3B lite
+        if use_14b:
+            model_name = "Wan2_1-T2V-14B_fp8_e4m3fn_scaled_KJ.safetensors"
+            model_precision = "fp16"
+            model_quant = "fp8_e4m3fn_scaled"
+            t5_device = "offload_device"
+            encode_device = "cpu"
+        else:
+            model_name = "wan2.1_t2v_1.3B_fp16.safetensors"
+            model_precision = "fp16"
+            model_quant = "disabled"
+            t5_device = "main_device"
+            encode_device = "gpu"
+
         # Inject parameters into the correct node inputs
         for nid, node in workflow.items():
             ntype = node.get("class_type", "")
             inputs = node.get("inputs", {})
 
-            if ntype == "WanVideoTextEncode":
+            if ntype == "WanVideoModelLoader":
+                inputs["model"] = model_name
+                inputs["base_precision"] = model_precision
+                inputs["quantization"] = model_quant
+
+            elif ntype == "LoadWanVideoT5TextEncoder":
+                inputs["load_device"] = t5_device
+
+            elif ntype == "WanVideoTextEncode":
                 inputs["positive_prompt"] = prompt
                 inputs["negative_prompt"] = negative_prompt
+                inputs["device"] = encode_device
+                inputs["force_offload"] = use_14b
 
             elif ntype == "WanVideoEmptyEmbeds":
                 inputs["width"] = width

@@ -13,9 +13,9 @@
   },
   "2": {
     "inputs": {
-      "model": "wan2.1_t2v_1.3B_fp16.safetensors",
+      "model": "Wan2_1-T2V-14B_fp8_e4m3fn_scaled_KJ.safetensors",
       "base_precision": "fp16",
-      "quantization": "disabled",
+      "quantization": "fp8_e4m3fn_scaled",
       "load_device": "offload_device",
       "attention_mode": "sdpa"
     },
@@ -40,8 +40,8 @@
         "1",
         0
       ],
-      "positive_prompt": "a cute fluffy calico cat stretching and yawning on a sunny windowsill, warm morning light, cozy home atmosphere, 4k, cinematic",
-      "negative_prompt": "blurry, low quality, distorted, jittery, watermark, text, bad anatomy, ugly, deformed",
+      "positive_prompt": "a cute fluffy cat stretching on a sunny windowsill, cinematic, 4k",
+      "negative_prompt": "blurry, low quality, distorted, jittery, watermark",
       "translate_prompt": true,
       "force_offload": true,
       "device": "cpu"
@@ -53,9 +53,9 @@
   },
   "5": {
     "inputs": {
-      "width": 832,
-      "height": 480,
-      "num_frames": 33
+      "width": 480,
+      "height": 320,
+      "num_frames": 17
     },
     "class_type": "WanVideoEmptyEmbeds",
     "_meta": {
@@ -76,7 +76,7 @@
         "4",
         0
       ],
-      "steps": 25,
+      "steps": 10,
       "cfg": 5.0,
       "shift": 5.0,
       "seed": 42,
@@ -117,7 +117,7 @@
         "7",
         0
       ],
-      "filename_prefix": "WanVideo_Cat_1.3B",
+      "filename_prefix": "WanVideo_14B_Test",
       "fps": 16.0,
       "lossless": false,
       "quality": 90,

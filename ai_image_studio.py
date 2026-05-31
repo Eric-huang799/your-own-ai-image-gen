@@ -1197,6 +1197,13 @@ sitting at desk reading book, wearing glasses and school uniform""")
         tk.Spinbox(param_frame, from_=1.0, to=10.0, increment=0.5, textvariable=self.v_cfg_var,
                    width=5, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
 
+        tk.Label(param_frame, text="  Quality:", bg="#1a1a2e", fg="#fff",
+                 font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
+        self.v_quality_var = tk.StringVar(value="lite")
+        ttk.Combobox(param_frame, textvariable=self.v_quality_var,
+                     values=["lite (1.3B, Fast)", "full (14B, Best Quality)"],
+                     state="readonly", width=22, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=5)
+
         tk.Label(param_frame, text="  FPS:", bg="#1a1a2e", fg="#fff",
                  font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=(20, 0))
         self.v_fps_var = tk.StringVar(value="16")
@@ -1307,23 +1314,33 @@ English video prompt:"""
                 steps = int(self.v_steps_var.get())
                 cfg = float(self.v_cfg_var.get())
                 fps = int(self.v_fps_var.get())
+                quality = self.v_quality_var.get()
+                use_14b = quality.startswith("full")
                 duration = num_frames / fps
+
+                self.video_status_label.config(
+                    text=f"Generating with {'14B FULL' if use_14b else '1.3B Lite'}...\n"
+                         f"This may take 2-10 minutes",
+                    fg="#e94560")
+                self.root.update()
 
                 result = self.wanvideo.generate(
                     prompt=en_prompt,
                     negative_prompt="blurry, low quality, distorted, jittery, static, watermark, text, subtitles, bad quality, worst quality, ugly, deformed",
                     width=width, height=height, steps=steps,
                     num_frames=num_frames, cfg=cfg, frame_rate=fps,
-                    preview_enabled=True,
+                    use_14b=use_14b,
                 )
 
                 save_path = result.save_path or os.path.join(OUTPUT_DIR_DEFAULT, result.filename)
                 with open(save_path, "wb") as f:
                     f.write(result.image_data)
 
+                model_label = "14B Full" if use_14b else "1.3B Lite"
                 file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
                 self.video_status_label.config(
-                    text=f"✅ Done!\n\nSaved: {result.filename}\n"
+                    text=f"✅ Done! [{model_label}]\n\n"
+                         f"Saved: {result.filename}\n"
                          f"Size: {file_size_mb:.1f} MB | "
                          f"Duration: {duration:.1f}s | "
                          f"{width}×{height} @ {fps}fps\n\n"
