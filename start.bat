@@ -1,60 +1,66 @@
 @echo off
 chcp 65001 >nul 2>&1
-title 你自己的AI生图 - AI Image Studio
+title AI Image Studio
 
 echo ===========================================
-echo    你自己的AI生图 - 本地AI图像生成工作室
+echo   AI Image Studio - v3.2
+echo   1. 桌面 GUI 版 (tkinter)
+echo   2. 网页 WebUI 版 (浏览器)
 echo ===========================================
 echo.
+choice /c 12 /n /m "选择启动模式 [1/2]: "
+if errorlevel 2 goto WEBUI
+if errorlevel 1 goto DESKTOP
 
-:: Check Python
+:DESKTOP
 echo [Check] Python...
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [Error] Python not found! Please install Python 3.10+
+    echo [Error] Python not found!
     pause
     exit /b 1
 )
 
-:: Check deps
 echo [Check] Python deps...
-python -c "import PIL, requests, tkinter" >nul 2>&1
+python -c "import PIL, requests, tkinter, psutil" >nul 2>&1
 if errorlevel 1 (
-    echo [Install] Installing deps...
-    python -m pip install -r requirements.txt -q
+    echo [Install] Installing dependencies...
+    python -m pip install -r "%~dp0requirements.txt" -q
 )
 
-:: Check Ollama
 echo [Check] Ollama...
 python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11434/api/tags', timeout=2)" >nul 2>&1
 if errorlevel 1 (
     echo [Start] Starting Ollama...
     start "Ollama" ollama serve
-    echo [Wait] Waiting for Ollama...
     timeout /t 5 /nobreak >nul
 ) else (
     echo [OK] Ollama running
 )
 
-:: Check ComfyUI
-echo [Check] ComfyUI...
-set COMFY_OK=0
-python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8188/system_stats', timeout=2)" >nul 2>&1 && set COMFY_OK=1
-python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8189/system_stats', timeout=2)" >nul 2>&1 && set COMFY_OK=1
-if %COMFY_OK%==0 (
-    echo.
-    echo [Warning] ComfyUI not detected on port 8188 or 8189.
-    echo You can start it manually, or the app will try to auto-start it.
-    echo Make sure ComfyUI is installed at ~/ComfyUI/main.py
-    echo.
-) else (
-    echo [OK] ComfyUI running
-)
-
-:: Launch
-echo.
-echo ===========================================
-echo    Launching AI Image Studio...
-echo ===========================================
+echo [Launch] Desktop GUI...
 python "%~dp0ai_image_studio.py"
 pause
+exit /b 0
+
+:WEBUI
+echo [Check] Python...
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo [Error] Python not found!
+    pause
+    exit /b 1
+)
+
+echo [Check] Python deps...
+python -c "import gradio" >nul 2>&1
+if errorlevel 1 (
+    echo [Install] Installing WebUI dependencies...
+    python -m pip install gradio -q
+)
+
+echo [Launch] WebUI...
+echo 浏览器打开 http://127.0.0.1:7862
+python "%~dp0ai_studio_web.py"
+pause
+exit /b 0
